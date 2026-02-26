@@ -1,3 +1,47 @@
+import sys
+import os
+
+# Tek instance kontrolü (opsiyonel)
+LOCK_FILE = 'bot.lock'
+
+def check_single_instance():
+    """Bot'un tek bir instance çalıştığından emin ol"""
+    if os.path.exists(LOCK_FILE):
+        # Lock dosyası var, içindeki PID'i kontrol et
+        try:
+            with open(LOCK_FILE, 'r') as f:
+                old_pid = int(f.read().strip())
+            # İşlem hala çalışıyor mu?
+            if os.name == 'nt':  # Windows
+                import subprocess
+                result = subprocess.run(f'tasklist /FI "PID eq {old_pid}"', 
+                                       shell=True, capture_output=True, text=True)
+                if str(old_pid) in result.stdout:
+                    print(f"❌ Bot zaten çalışıyor (PID: {old_pid})")
+                    sys.exit(1)
+            else:  # Linux/Mac
+                try:
+                    os.kill(old_pid, 0)  # İşlem var mı?
+                    print(f"❌ Bot zaten çalışıyor (PID: {old_pid})")
+                    sys.exit(1)
+                except OSError:
+                    pass  # İşlem yok, devam et
+        except:
+            pass
+    
+    # Yeni PID'i yaz
+    with open(LOCK_FILE, 'w') as f:
+        f.write(str(os.getpid()))
+    
+    print(f"✅ Bot başlatıldı (PID: {os.getpid()})")
+
+# main() fonksiyonunun başında çağır:
+def main():
+    check_single_instance()  # <-- YENİ SATIR
+    # ... devam
+
+
+
 """
 ANA BOT DOSYASI - PROFESYONEL VERSİYON
 Gelişmiş hata yönetimi, loglama ve optimizasyon
@@ -1562,3 +1606,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
