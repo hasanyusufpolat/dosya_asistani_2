@@ -98,38 +98,15 @@ def extract_text_from_file(file_path: str, file_type: str) -> str:
 
 async def check_business_hours() -> bool:
     """
-    Çalışma saatlerini kontrol et (Sabah 8 - Akşam 8)
+    Çalışma saatlerini kontrol et (7/24 aktif)
     """
-    now = datetime.datetime.now()
-    hour = now.hour
-    # Sabah 8 (8) ile akşam 8 (20) arası
-    return 0 <= hour < 23
+    return True  # Her zaman True döndür, 7/24 çalışsın
 
 async def get_business_hours_message() -> str:
     """
-    Çalışma saatleri dışında gösterilecek mesaj
+    Çalışma saatleri dışında gösterilecek mesaj (artık kullanılmıyor)
     """
-    now = datetime.datetime.now()
-    current_hour = now.hour
-    
-    if current_hour < 8:
-        target_hour = 8
-        wait_hours = target_hour - current_hour
-    elif current_hour >= 23:
-        target_hour = 0
-        wait_hours = (24 - current_hour) + target_hour
-    else:
-        return ""  # Çalışma saatleri içinde
-    
-    return f"""😴 **Bot şu anda çalışma saatleri dışında!**
-
-━━━━━━━━━━━━━━━━━━━━━
-🕒 Çalışma saatlerimiz: **Sabah 08:00 - Akşam 20:00**
-
-⏳ {wait_hours} saat sonra ({target_hour}:00'de) tekrar aktif olacağız.
-
-📞 Acil durumlar için: @Yusozone
-"""
+    return ""
 
 def get_quality_keyboard() -> InlineKeyboardMarkup:
     """Kalite seçim menüsü oluştur"""
@@ -174,7 +151,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • ✅ Hata ve Eksik Kontrolü
 • ⭐ Kalite Optimizasyonu (Taslak/Standart/Profesyonel/Premium)
 
-⏰ **Çalışma Saatleri:** 08:00 - 20:00
+⚡ **7/24 HİZMETİNİZDEYİZ!**
 
 ━━━━━━━━━━━━━━━━━━━━━
 Başlamak için butona tıklayın."""
@@ -209,7 +186,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                  "💳 **Paket Satın Al** - Yeni paket almak için\n"
                  "📊 **Kalan Haklarım** - Hak durumunuzu görmek için\n"
                  "✨ **Akıllı İşlemler** - Gelişmiş belge işleme özellikleri\n\n"
-                 "⏰ **Çalışma Saatleri:** 08:00 - 20:00\n\n"
+                 "⚡ **7/24 HİZMETİNİZDEYİZ**\n\n"
                  "Desteklenen dosya türleri:\n"
                  "• PDF (`.pdf`)\n"
                  "• Word (`.doc`, `.docx`)\n"
@@ -301,7 +278,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     username = update.effective_user.username or "isimsiz"
     
-
     # Hak kontrolü - doğrudan veritabanından
     remaining = get_user_rights_direct(user_id)
     logger.info(f"📥 Dosya yükleme: {username} - Kalan hak: {remaining}")
@@ -387,25 +363,46 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_file_actions(update, context, file_path, file_type, file_name)
 
 async def show_file_actions(update: Update, context: ContextTypes.DEFAULT_TYPE, file_path: str, file_type: str, file_name: str):
-    """Dosya yüklendikten sonra yapılabilecek işlemleri göster"""
+    """Dosya yüklendikten sonra yapılabilecek işlemleri göster - GELİŞMİŞ VERSİYON"""
     
+    # Temel akıllı işlem butonları
     keyboard = [
         [InlineKeyboardButton("📛 Akıllı İsimlendir", callback_data="action_naming")],
         [InlineKeyboardButton("📄 Belge Türünü Tanı", callback_data="action_classify")],
-        [InlineKeyboardButton("✨ Dönüştür (Analiz + Dönüşüm)", callback_data="action_convert")],
+    ]
+    
+    # DOSYA TÜRÜNE GÖRE DÖNÜŞÜM SEÇENEKLERİ
+    if file_type in CONVERSION_MAP:
+        # Dönüşüm seçenekleri varsa başlık ekle
+        keyboard.append([InlineKeyboardButton("🔄 DÖNÜŞÜM SEÇENEKLERİ", callback_data="noop")])
+        
+        # Her dönüşüm seçeneği için buton ekle
+        for target in CONVERSION_MAP[file_type]:
+            display_name = DISPLAY_NAMES.get(target, target)
+            callback_data = f"convert|{target}"
+            keyboard.append([InlineKeyboardButton(f"🔄 {display_name}", callback_data=callback_data)])
+    
+    # Diğer akıllı işlemler
+    keyboard.extend([
+        [InlineKeyboardButton("✨ Akıllı Dönüşüm (Analiz + Dönüşüm)", callback_data="action_convert")],
         [InlineKeyboardButton("📋 Özetle", callback_data="action_summarize")],
         [InlineKeyboardButton("✅ Hata Kontrolü", callback_data="action_validate")],
         [InlineKeyboardButton("⭐ Kalite Optimizasyonu", callback_data="action_quality")],
         [InlineKeyboardButton("🔁 Tüm İşlemler (5 Hak)", callback_data="action_all")],
         [InlineKeyboardButton("◀️ Ana Menü", callback_data="merhaba")]
-    ]
+    ])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
+    # Dosya türüne göre açıklama metni
+    conversion_options = ", ".join([DISPLAY_NAMES.get(t, t) for t in CONVERSION_MAP.get(file_type, [])])
+    
     await update.message.reply_text(
         f"📂 **Dosya yüklendi:** `{file_name}`\n\n"
-        f"📁 **Dosya türü:** {DISPLAY_NAMES.get(file_type, file_type)}\n\n"
-        f"Ne yapmak istersiniz?",
+        f"📁 **Dosya türü:** {DISPLAY_NAMES.get(file_type, file_type)}\n"
+        f"🔄 **Dönüştürülebilecek formatlar:** {conversion_options if conversion_options else 'Yok'}\n\n"
+        f"**Ne yapmak istersiniz?**\n"
+        f"• Yukarıdaki butonlardan birini seçin",
         reply_markup=reply_markup,
         parse_mode='Markdown'
     )
@@ -1015,7 +1012,12 @@ async def handle_smart_validate(query, context, user_id, file_path, file_type, f
         text_content = extract_text_from_file(file_path, file_type)
         
         # Basit extracted_info oluştur
-        extracted_info = detect_important_fields(text_content) if 'detect_important_fields' in dir() else {}
+        extracted_info = {}
+        try:
+            from converters import detect_important_fields
+            extracted_info = detect_important_fields(text_content)
+        except:
+            pass
         
         # Belge türünü belirle
         doc_type = file_type.lower()
@@ -1467,7 +1469,7 @@ def main():
     print(f"⭐ Kalite: quality_optimizer.py (AKTİF)")
     print(f"💰 Ödeme: payments.py (TELEFONSUZ - KULLANICI ADI İLE)")
     print(f"📊 Loglama: bot.log, payments.log, database.log, converters.log, quality.log")
-    print(f"⏰ Çalışma Saatleri: 08:00 - 20:00")
+    print(f"⚡ 7/24 HİZMETİNİZDEYİZ!")
     
     # Veritabanını oluştur
     try:
@@ -1557,7 +1559,7 @@ def main():
     print("=" * 60)
     print("🤖 Bot çalışıyor...")
     print("📱 Telegram: @dosya_asistani_bot")
-    print("⏰ Çalışma Saatleri: 08:00 - 20:00")
+    print("⚡ 7/24 HİZMETİNİZDEYİZ!")
     print("✨ Akıllı İşlemler: Aktif")
     print("⭐ Kalite Seviyeleri: Taslak/Standart/Profesyonel/Premium")
     print("🛑 Durdurmak: CTRL+C")
@@ -1573,6 +1575,4 @@ def main():
         logger.info("👋 Bot durduruldu.")
 
 if __name__ == "__main__":
-
     main()
-
