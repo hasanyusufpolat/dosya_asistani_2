@@ -1,5 +1,5 @@
 """
-PROFESYONEL DOSYA DÖNÜŞTÜRME MODÜLÜ
+PROFESYONEL DOSYA DÖNÜŞTÜRME MODÜLÜ - GELİŞMİŞ VERSİYON
 Tüm dönüşümler yüksek kalitede ve sorunsuz çalışır
 Gelişmiş tipografi, tablo yönetimi ve format koruma
 Yapay zeka destekli analiz, isimlendirme, sınıflandırma, özetleme ve doğrulama entegrasyonu
@@ -13,55 +13,95 @@ import asyncio
 import hashlib
 import json
 import traceback
-from typing import Dict, List, Tuple, Optional, Any, Union
-from dataclasses import dataclass, field
-from enum import Enum
-from collections import Counter
-from PIL import Image, ImageEnhance, ImageFilter, ImageDraw, ImageFont, ImageOps
-import pytesseract
 import tempfile
 import shutil
+import time
+from typing import Dict, List, Tuple, Optional, Any, Union, Callable
+from dataclasses import dataclass, field, asdict
+from enum import Enum
+from collections import Counter
+from pathlib import Path
+from functools import wraps
 
-# Yeni modüller
+# Görsel işleme kütüphaneleri
+try:
+    from PIL import Image, ImageEnhance, ImageFilter, ImageDraw, ImageFont, ImageOps
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+    print("⚠️ PIL modülü bulunamadı, görsel işlemleri sınırlı olacak")
+
+try:
+    import pytesseract
+    TESSERACT_AVAILABLE = True
+except ImportError:
+    TESSERACT_AVAILABLE = False
+    print("⚠️ pytesseract modülü bulunamadı, OCR işlemleri yapılamayacak")
+
+# Yeni modüller (opsiyonel)
 try:
     import analyzer
+    ANALYZER_AVAILABLE = True
 except ImportError:
     analyzer = None
-    print("⚠️ analyzer modülü bulunamadı")
+    ANALYZER_AVAILABLE = False
 
 try:
     import ai_editor
+    AI_EDITOR_AVAILABLE = True
 except ImportError:
     ai_editor = None
+    AI_EDITOR_AVAILABLE = False
 
 try:
     import naming
+    NAMING_AVAILABLE = True
 except ImportError:
     naming = None
+    NAMING_AVAILABLE = False
 
 try:
     import classifier
+    CLASSIFIER_AVAILABLE = True
 except ImportError:
     classifier = None
+    CLASSIFIER_AVAILABLE = False
 
 try:
     import summarizer
+    SUMMARIZER_AVAILABLE = True
 except ImportError:
     summarizer = None
+    SUMMARIZER_AVAILABLE = False
 
 try:
     import validator
+    VALIDATOR_AVAILABLE = True
 except ImportError:
     validator = None
+    VALIDATOR_AVAILABLE = False
 
 try:
     import quality_optimizer
+    QUALITY_OPTIMIZER_AVAILABLE = True
 except ImportError:
     quality_optimizer = None
+    QUALITY_OPTIMIZER_AVAILABLE = False
 
-# Tesseract yolunu ayarla (Windows için)
-try:
-    if os.name == 'nt':  # Windows
+# Tesseract yolunu ayarla (platform bağımsız)
+def setup_tesseract_path():
+    """Tesseract OCR yolunu platforma göre ayarla"""
+    if not TESSERACT_AVAILABLE:
+        return False
+    
+    # Environment değişkeninden al
+    tesseract_cmd = os.getenv('TESSERACT_CMD')
+    if tesseract_cmd and os.path.exists(tesseract_cmd):
+        pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+        return True
+    
+    # Windows için varsayılan yollar
+    if os.name == 'nt':
         possible_paths = [
             r'C:\Program Files\Tesseract-OCR\tesseract.exe',
             r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
@@ -69,56 +109,124 @@ try:
         for path in possible_paths:
             if os.path.exists(path):
                 pytesseract.pytesseract.tesseract_cmd = path
-                break
-except:
-    pass
+                return True
+    
+    # Linux/Mac için varsayılan yol
+    common_paths = ['/usr/bin/tesseract', '/usr/local/bin/tesseract']
+    for path in common_paths:
+        if os.path.exists(path):
+            pytesseract.pytesseract.tesseract_cmd = path
+            return True
+    
+    return False
+
+TESSERACT_CONFIGURED = setup_tesseract_path()
 
 # Loglama ayarları
+LOG_DIR = Path('logs')
+LOG_DIR.mkdir(exist_ok=True)
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, os.getenv('LOG_LEVEL', 'INFO')),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('converters.log'),
+        logging.FileHandler(LOG_DIR / 'converters.log'),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
+
+# ========== DEKORATÖRLER ==========
+
+def timer(func: Callable) -> Callable:
+    """Fonksiyon çalışma süresini ölçen dekoratör"""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        start = time.time()
+        result = func(*args, **kwargs)
+        duration = time.time() - start
+        logger.debug(f"⏱️ {func.__name__} çalışma süresi: {duration:.3f}s")
+        return result
+    return wrapper
+
+def handle_exceptions(func: Callable) -> Callable:
+    """Fonksiyon hatalarını yakalayan dekoratör"""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            logger.error(f"❌ {func.__name__} hatası: {e}")
+            traceback.print_exc()
+            # Hata durumunda standart bir dönüş değeri
+            if 'metrics' in kwargs or (len(args) > 2 and isinstance(args[2], ConversionMetrics)):
+                metrics = kwargs.get('metrics', args[2] if len(args) > 2 else ConversionMetrics())
+                return False, "", metrics
+            return False, "", ConversionMetrics()
+    return wrapper
+
+
 # ========== DESTEKLENEN FORMATLAR ==========
-SUPPORTED_SOURCE_FORMATS = {
-    'WORD': ['.doc', '.docx'],
-    'EXCEL': ['.xls', '.xlsx'],
-    'POWERPOINT': ['.ppt', '.pptx'],
-    'PDF': ['.pdf'],
-    'GORSEL': ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.gif'],
-    'TEXT': ['.txt', '.rtf', '.md'],
+
+class FileType(str, Enum):
+    """Dosya tipleri (Enum ile tip güvenliği)"""
+    WORD = "WORD"
+    EXCEL = "EXCEL"
+    POWERPOINT = "POWERPOINT"
+    PDF = "PDF"
+    GORSEL = "GORSEL"
+    TEXT = "TEXT"
+    MARKDOWN = "MARKDOWN"
+    HTML = "HTML"
+    UNKNOWN = "UNKNOWN"
+
+# Dosya uzantılarından tip tespiti
+EXTENSION_TO_TYPE = {
+    '.doc': FileType.WORD, '.docx': FileType.WORD,
+    '.xls': FileType.EXCEL, '.xlsx': FileType.EXCEL,
+    '.ppt': FileType.POWERPOINT, '.pptx': FileType.POWERPOINT,
+    '.pdf': FileType.PDF,
+    '.png': FileType.GORSEL, '.jpg': FileType.GORSEL, '.jpeg': FileType.GORSEL,
+    '.bmp': FileType.GORSEL, '.tiff': FileType.GORSEL, '.gif': FileType.GORSEL,
+    '.txt': FileType.TEXT, '.rtf': FileType.TEXT,
+    '.md': FileType.MARKDOWN,
 }
 
-SUPPORTED_TARGET_FORMATS = {
-    'WORD': ['PDF', 'EXCEL', 'POWERPOINT', 'TEXT'],
-    'EXCEL': ['PDF', 'WORD', 'POWERPOINT', 'TEXT'],
-    'POWERPOINT': ['PDF', 'WORD', 'TEXT'],
-    'PDF': ['WORD', 'TEXT'],
-    'GORSEL': ['PDF', 'WORD', 'TEXT'],
-    'TEXT': ['PDF', 'WORD'],
+# Tipin görünen adları
+TYPE_DISPLAY_NAMES = {
+    FileType.WORD: '📝 Word',
+    FileType.EXCEL: '📊 Excel',
+    FileType.POWERPOINT: '📽️ PowerPoint',
+    FileType.PDF: '📄 PDF',
+    FileType.GORSEL: '🖼️ Görsel',
+    FileType.TEXT: '📃 Metin',
+    FileType.MARKDOWN: '📝 Markdown',
+    FileType.HTML: '🌐 HTML',
+    FileType.UNKNOWN: '❌ Bilinmiyor',
 }
 
-FORMAT_DISPLAY_NAMES = {
-    'WORD': '📝 Word',
-    'EXCEL': '📊 Excel',
-    'POWERPOINT': '📽️ PowerPoint',
-    'PDF': '📄 PDF',
-    'GORSEL': '🖼️ Görsel',
-    'TEXT': '📃 Metin',
+# Tipin varsayılan uzantısı
+TYPE_EXTENSION = {
+    FileType.WORD: '.docx',
+    FileType.EXCEL: '.xlsx',
+    FileType.POWERPOINT: '.pptx',
+    FileType.PDF: '.pdf',
+    FileType.GORSEL: '.png',
+    FileType.TEXT: '.txt',
+    FileType.MARKDOWN: '.md',
+    FileType.HTML: '.html',
 }
 
-EXTENSION_MAP = {
-    'WORD': '.docx',
-    'EXCEL': '.xlsx',
-    'POWERPOINT': '.pptx',
-    'PDF': '.pdf',
-    'GORSEL': '.png',
-    'TEXT': '.txt',
+# Desteklenen dönüşümler
+SUPPORTED_CONVERSIONS = {
+    FileType.WORD: [FileType.PDF, FileType.EXCEL, FileType.POWERPOINT, FileType.TEXT],
+    FileType.EXCEL: [FileType.PDF, FileType.WORD, FileType.POWERPOINT, FileType.TEXT],
+    FileType.POWERPOINT: [FileType.PDF, FileType.WORD, FileType.TEXT],
+    FileType.PDF: [FileType.WORD, FileType.TEXT],
+    FileType.GORSEL: [FileType.PDF, FileType.WORD, FileType.TEXT],
+    FileType.TEXT: [FileType.PDF, FileType.WORD],
+    FileType.MARKDOWN: [FileType.PDF, FileType.WORD, FileType.HTML],
 }
 
 
@@ -130,6 +238,17 @@ class ConversionQuality(Enum):
     STANDARD = "standart"       # Normal kalite
     PROFESSIONAL = "profesyonel" # Yüksek kalite
     PREMIUM = "premium"         # Maksimum kalite
+    
+    @classmethod
+    def from_string(cls, value: str) -> 'ConversionQuality':
+        """String'den enum'a çevir"""
+        mapping = {
+            'taslak': cls.DRAFT,
+            'standart': cls.STANDARD,
+            'profesyonel': cls.PROFESSIONAL,
+            'premium': cls.PREMIUM,
+        }
+        return mapping.get(value.lower(), cls.PROFESSIONAL)
 
 
 class DocumentComplexity(Enum):
@@ -151,6 +270,12 @@ class ConversionMetrics:
     warnings: List[str] = field(default_factory=list)
     suggestions: List[str] = field(default_factory=list)
     complexity: DocumentComplexity = DocumentComplexity.SIMPLE
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Sözlüğe çevir"""
+        data = asdict(self)
+        data['complexity'] = self.complexity.value
+        return data
 
 
 @dataclass
@@ -159,12 +284,23 @@ class ConversionResult:
     success: bool
     output_path: str
     metrics: ConversionMetrics
-    changes_made: List[str]
+    changes_made: List[str] = field(default_factory=list)
     error_message: Optional[str] = None
     warning_message: Optional[str] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Sözlüğe çevir"""
+        return {
+            'success': self.success,
+            'output_path': self.output_path,
+            'metrics': self.metrics.to_dict(),
+            'changes_made': self.changes_made,
+            'error_message': self.error_message,
+            'warning_message': self.warning_message,
+        }
 
 
-# ========== YARDIMCI FONKSİYONLAR (GELİŞTİRİLMİŞ) ==========
+# ========== YARDIMCI FONKSİYONLAR ==========
 
 def get_file_extension(file_path: str) -> str:
     """Dosya uzantısını döndür"""
@@ -188,23 +324,50 @@ def get_file_size_str(size_bytes: int) -> str:
         return f"{size_bytes/(1024*1024*1024):.1f} GB"
 
 
-def detect_source_type(file_path: str) -> Optional[str]:
-    """Dosya uzantısından kaynak tipini tespit et"""
+def detect_file_type(file_path: str) -> FileType:
+    """Dosya uzantısından tipini tespit et"""
     ext = get_file_extension(file_path)
-    
-    for source_type, extensions in SUPPORTED_SOURCE_FORMATS.items():
-        if ext in extensions:
-            return source_type
-    
-    return None
+    return EXTENSION_TO_TYPE.get(ext, FileType.UNKNOWN)
 
 
-def is_conversion_supported(source_type: str, target_type: str) -> bool:
+def is_conversion_supported(source_type: FileType, target_type: FileType) -> bool:
     """Dönüşümün desteklenip desteklenmediğini kontrol et"""
-    if source_type not in SUPPORTED_TARGET_FORMATS:
+    if source_type not in SUPPORTED_CONVERSIONS:
         return False
-    
-    return target_type in SUPPORTED_TARGET_FORMATS[source_type]
+    return target_type in SUPPORTED_CONVERSIONS[source_type]
+
+
+def get_display_name(file_type: FileType) -> str:
+    """Dosya tipinin görünen adını döndür"""
+    return TYPE_DISPLAY_NAMES.get(file_type, str(file_type))
+
+
+def get_extension(file_type: FileType) -> str:
+    """Dosya tipinin varsayılan uzantısını döndür"""
+    return TYPE_EXTENSION.get(file_type, '.bin')
+
+
+def ensure_directory(directory: str) -> bool:
+    """Klasörün var olduğundan emin ol"""
+    try:
+        Path(directory).mkdir(parents=True, exist_ok=True)
+        return True
+    except Exception as e:
+        logger.error(f"❌ Klasör oluşturma hatası: {e}")
+        return False
+
+
+def calculate_file_hash(file_path: str, algorithm: str = 'md5') -> str:
+    """Dosya hash'i hesapla (değişiklik kontrolü için)"""
+    try:
+        hash_func = hashlib.new(algorithm)
+        with open(file_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(4096), b''):
+                hash_func.update(chunk)
+        return hash_func.hexdigest()
+    except Exception as e:
+        logger.error(f"❌ Hash hesaplama hatası: {e}")
+        return ""
 
 
 def clean_text(text: str, aggressive: bool = False) -> str:
@@ -214,6 +377,9 @@ def clean_text(text: str, aggressive: bool = False) -> str:
     Args:
         text: Temizlenecek metin
         aggressive: Agresif temizleme modu
+    
+    Returns:
+        Temizlenmiş metin
     """
     if not text:
         return ""
@@ -223,7 +389,6 @@ def clean_text(text: str, aggressive: bool = False) -> str:
     cleaned_lines = []
     
     for line in lines:
-        # Satırdaki fazla boşlukları temizle
         clean_line = ' '.join(line.split())
         if clean_line:
             cleaned_lines.append(clean_line)
@@ -232,29 +397,13 @@ def clean_text(text: str, aggressive: bool = False) -> str:
         # Agresif temizleme - tüm gereksiz karakterleri temizle
         final_lines = []
         for line in cleaned_lines:
-            # Sadece alfanümerik ve temel noktalama işaretlerini bırak
             clean_line = re.sub(r'[^\w\s\.,;:!?\-\(\)\[\]{}@#$%&*+/=]', '', line)
             if clean_line:
                 final_lines.append(clean_line)
-    else:
-        # Normal temizleme - paragrafları birleştir (çok kısa satırları)
-        final_lines = []
-        i = 0
-        while i < len(cleaned_lines):
-            if i < len(cleaned_lines) - 1 and len(cleaned_lines[i]) < 30 and len(cleaned_lines[i+1]) > 50:
-                # Kısa satır + uzun satır = muhtemelen başlık
-                final_lines.append(cleaned_lines[i])
-                final_lines.append(cleaned_lines[i+1])
-                i += 2
-            elif i < len(cleaned_lines) - 1 and len(cleaned_lines[i]) > 0 and len(cleaned_lines[i+1]) > 0:
-                # İki normal satır
-                final_lines.append(cleaned_lines[i])
-                i += 1
-            else:
-                final_lines.append(cleaned_lines[i])
-                i += 1
+        return '\n'.join(final_lines)
     
-    return '\n'.join(final_lines)
+    # Normal temizleme
+    return '\n'.join(cleaned_lines)
 
 
 def detect_table_structure(text: str) -> Tuple[bool, List[Dict]]:
@@ -265,7 +414,6 @@ def detect_table_structure(text: str) -> Tuple[bool, List[Dict]]:
         (tablo_var_mı, tablo_bilgileri)
     """
     lines = text.split('\n')
-    tablo_olasiligi = 0
     possible_tables = []
     table_score = 0
     
@@ -346,6 +494,9 @@ def format_number(value: Any, decimal_places: int = 2, thousand_sep: bool = True
         decimal_places: Ondalık basamak sayısı
         thousand_sep: Binlik ayırıcı kullan
         currency: Para birimi (TL, USD, EUR, vs.)
+    
+    Returns:
+        Formatlanmış sayı
     """
     if value is None:
         return ""
@@ -394,162 +545,167 @@ def format_number(value: Any, decimal_places: int = 2, thousand_sep: bool = True
     return str(value)
 
 
-def extract_text_from_file(file_path: str, file_type: str, 
+def extract_text_from_file(file_path: str, file_type: FileType, 
                           extract_mode: str = 'full') -> str:
     """
     Dosyadan metin çıkar (farklı formatlar için - süper gelişmiş)
     
     Args:
         file_path: Dosya yolu
-        file_type: Dosya tipi (WORD, PDF, EXCEL, POWERPOINT, GORSEL)
+        file_type: Dosya tipi
         extract_mode: Çıkarma modu (full, metadata, content_only)
+    
+    Returns:
+        Çıkarılan metin
     """
     text = ""
     metadata = {}
     
     try:
-        if file_type == 'WORD':
-            from docx import Document
-            doc = Document(file_path)
-            
-            # Belge özellikleri
-            if extract_mode in ['full', 'metadata']:
-                core_props = doc.core_properties
-                metadata = {
-                    'author': core_props.author,
-                    'created': str(core_props.created),
-                    'modified': str(core_props.modified),
-                    'title': core_props.title,
-                    'subject': core_props.subject
-                }
-            
-            if extract_mode in ['full', 'content_only']:
-                # Paragraflar
-                for para in doc.paragraphs:
-                    if para.text.strip():
-                        text += para.text + "\n"
-                
-                # Tablolar
-                for table in doc.tables:
-                    for row in table.rows:
-                        row_text = " | ".join([cell.text for cell in row.cells])
-                        if row_text.strip():
-                            text += row_text + "\n"
-                    text += "\n"
-                
-                # Header/Footer
-                for section in doc.sections:
-                    header = section.header
-                    footer = section.footer
-                    if header.paragraphs:
-                        text += "--- Header ---\n"
-                        for para in header.paragraphs:
-                            if para.text.strip():
-                                text += para.text + "\n"
-                    if footer.paragraphs:
-                        text += "--- Footer ---\n"
-                        for para in footer.paragraphs:
-                            if para.text.strip():
-                                text += para.text + "\n"
-        
-        elif file_type == 'PDF':
-            import PyPDF2
-            with open(file_path, 'rb') as f:
-                pdf_reader = PyPDF2.PdfReader(f)
+        if file_type == FileType.WORD:
+            try:
+                from docx import Document
+                doc = Document(file_path)
                 
                 if extract_mode in ['full', 'metadata']:
-                    metadata = pdf_reader.metadata
+                    core_props = doc.core_properties
+                    metadata = {
+                        'author': core_props.author,
+                        'created': str(core_props.created),
+                        'modified': str(core_props.modified),
+                        'title': core_props.title,
+                        'subject': core_props.subject
+                    }
                 
                 if extract_mode in ['full', 'content_only']:
-                    for page_num, page in enumerate(pdf_reader.pages):
-                        page_text = page.extract_text()
-                        if page_text.strip():
-                            text += f"--- Sayfa {page_num + 1} ---\n"
-                            text += page_text + "\n\n"
+                    for para in doc.paragraphs:
+                        if para.text.strip():
+                            text += para.text + "\n"
+                    
+                    for table in doc.tables:
+                        for row in table.rows:
+                            row_text = " | ".join([cell.text for cell in row.cells])
+                            if row_text.strip():
+                                text += row_text + "\n"
+                        text += "\n"
+            except Exception as e:
+                logger.error(f"❌ Word okuma hatası: {e}")
+                return f"[Word dosyası okunamadı: {e}]"
         
-        elif file_type == 'EXCEL':
-            import pandas as pd
-            excel_file = pd.ExcelFile(file_path)
-            
-            if extract_mode in ['full', 'metadata']:
-                metadata = {
-                    'sheet_names': excel_file.sheet_names,
-                    'sheet_count': len(excel_file.sheet_names)
-                }
-            
-            if extract_mode in ['full', 'content_only']:
-                for sheet_name in excel_file.sheet_names:
-                    df = pd.read_excel(file_path, sheet_name=sheet_name)
-                    text += f"--- Sayfa: {sheet_name} ({df.shape[0]} satır, {df.shape[1]} sütun) ---\n"
-                    text += df.to_string() + "\n\n"
+        elif file_type == FileType.PDF:
+            try:
+                import PyPDF2
+                with open(file_path, 'rb') as f:
+                    pdf_reader = PyPDF2.PdfReader(f)
+                    
+                    if extract_mode in ['full', 'metadata']:
+                        metadata = dict(pdf_reader.metadata) if pdf_reader.metadata else {}
+                    
+                    if extract_mode in ['full', 'content_only']:
+                        for page_num, page in enumerate(pdf_reader.pages):
+                            page_text = page.extract_text()
+                            if page_text.strip():
+                                text += f"--- Sayfa {page_num + 1} ---\n"
+                                text += page_text + "\n\n"
+            except Exception as e:
+                logger.error(f"❌ PDF okuma hatası: {e}")
+                return f"[PDF dosyası okunamadı: {e}]"
         
-        elif file_type == 'POWERPOINT':
-            from pptx import Presentation
-            prs = Presentation(file_path)
-            
-            if extract_mode in ['full', 'metadata']:
-                metadata = {
-                    'slide_count': len(prs.slides)
-                }
-            
-            if extract_mode in ['full', 'content_only']:
-                for slide_num, slide in enumerate(prs.slides, 1):
-                    text += f"--- Slayt {slide_num} ---\n"
-                    for shape in slide.shapes:
-                        if hasattr(shape, "text") and shape.text.strip():
-                            text += shape.text + "\n"
-                    text += "\n"
+        elif file_type == FileType.EXCEL:
+            try:
+                import pandas as pd
+                excel_file = pd.ExcelFile(file_path)
+                
+                if extract_mode in ['full', 'metadata']:
+                    metadata = {
+                        'sheet_names': excel_file.sheet_names,
+                        'sheet_count': len(excel_file.sheet_names)
+                    }
+                
+                if extract_mode in ['full', 'content_only']:
+                    for sheet_name in excel_file.sheet_names:
+                        df = pd.read_excel(file_path, sheet_name=sheet_name)
+                        text += f"--- Sayfa: {sheet_name} ({df.shape[0]} satır, {df.shape[1]} sütun) ---\n"
+                        text += df.to_string() + "\n\n"
+            except Exception as e:
+                logger.error(f"❌ Excel okuma hatası: {e}")
+                return f"[Excel dosyası okunamadı: {e}]"
         
-        elif file_type == 'GORSEL':
-            from PIL import Image, ImageEnhance, ImageFilter
-            import pytesseract
+        elif file_type == FileType.POWERPOINT:
+            try:
+                from pptx import Presentation
+                prs = Presentation(file_path)
+                
+                if extract_mode in ['full', 'metadata']:
+                    metadata = {'slide_count': len(prs.slides)}
+                
+                if extract_mode in ['full', 'content_only']:
+                    for slide_num, slide in enumerate(prs.slides, 1):
+                        text += f"--- Slayt {slide_num} ---\n"
+                        for shape in slide.shapes:
+                            if hasattr(shape, "text") and shape.text.strip():
+                                text += shape.text + "\n"
+                        text += "\n"
+            except Exception as e:
+                logger.error(f"❌ PowerPoint okuma hatası: {e}")
+                return f"[PowerPoint dosyası okunamadı: {e}]"
+        
+        elif file_type == FileType.GORSEL:
+            if not TESSERACT_AVAILABLE or not TESSERACT_CONFIGURED:
+                return "[OCR sistemi yapılandırılmamış]"
             
-            image = Image.open(file_path)
-            
-            if extract_mode in ['full', 'metadata']:
-                metadata = {
-                    'format': image.format,
-                    'mode': image.mode,
-                    'size': image.size,
-                    'width': image.width,
-                    'height': image.height
-                }
-            
-            if extract_mode in ['full', 'content_only']:
-                # Görseli ön işle
-                if image.mode != 'L':
-                    image = image.convert('L')
+            try:
+                from PIL import Image, ImageEnhance, ImageFilter
                 
-                # Kontrast artır
-                enhancer = ImageEnhance.Contrast(image)
-                image = enhancer.enhance(2.0)
+                image = Image.open(file_path)
                 
-                # Gürültü azalt
-                image = image.filter(ImageFilter.MedianFilter(size=3))
+                if extract_mode in ['full', 'metadata']:
+                    metadata = {
+                        'format': image.format,
+                        'mode': image.mode,
+                        'size': image.size,
+                        'width': image.width,
+                        'height': image.height
+                    }
                 
-                # OCR dene
-                text = pytesseract.image_to_string(image, lang='tur+eng', config='--psm 6')
-                
-                if not text.strip():
-                    # Alternatif PSM dene
-                    text = pytesseract.image_to_string(image, lang='tur+eng', config='--psm 3')
+                if extract_mode in ['full', 'content_only']:
+                    # Görseli ön işle
+                    if image.mode != 'L':
+                        image = image.convert('L')
+                    
+                    enhancer = ImageEnhance.Contrast(image)
+                    image = enhancer.enhance(2.0)
+                    
+                    image = image.filter(ImageFilter.MedianFilter(size=3))
+                    
+                    text = pytesseract.image_to_string(image, lang='tur+eng', config='--psm 6')
+                    
+                    if not text.strip():
+                        text = pytesseract.image_to_string(image, lang='tur+eng', config='--psm 3')
+            except Exception as e:
+                logger.error(f"❌ Görsel OCR hatası: {e}")
+                return f"[Görsel okunamadı: {e}]"
         
         else:
             # TXT veya diğer formatlar
-            encodings = ['utf-8', 'windows-1254', 'iso-8859-9', 'latin1']
-            for encoding in encodings:
-                try:
-                    with open(file_path, 'r', encoding=encoding, errors='ignore') as f:
-                        text = f.read()
-                    break
-                except:
-                    continue
+            try:
+                encodings = ['utf-8', 'windows-1254', 'iso-8859-9', 'latin1']
+                for encoding in encodings:
+                    try:
+                        with open(file_path, 'r', encoding=encoding, errors='ignore') as f:
+                            text = f.read()
+                        break
+                    except:
+                        continue
+            except Exception as e:
+                logger.error(f"❌ Metin dosyası okuma hatası: {e}")
+                return f"[Dosya okunamadı: {e}]"
     
     except Exception as e:
         logger.error(f"❌ Metin çıkarma hatası: {e}")
+        return f"[İşlem hatası: {e}]"
     
     if extract_mode == 'full' and metadata:
-        # Metadata'yı da ekle
         meta_text = "\n".join([f"{k}: {v}" for k, v in metadata.items() if v])
         if meta_text:
             text = f"--- BELGE METADATASI ---\n{meta_text}\n\n{text}"
@@ -558,11 +714,10 @@ def extract_text_from_file(file_path: str, file_type: str,
 
 
 def detect_language(text: str) -> str:
-    """Metnin dilini tespit et (Türkçe/İngilizce/Almanca/Fransızca)"""
+    """Metnin dilini tespit et"""
     if not text:
         return 'unknown'
     
-    # Dil karakter setleri
     language_chars = {
         'tr': set('ğüşıöçĞÜŞİÖÇ'),
         'de': set('äöüßÄÖÜ'),
@@ -582,20 +737,17 @@ def detect_language(text: str) -> str:
     if scores:
         return max(scores, key=scores.get)
     
-    # İngilizce varsayılan
     return 'en'
 
 
 def detect_important_fields(text: str) -> Dict[str, Any]:
-    """Belgeden önemli alanları tespit et (süper gelişmiş)"""
+    """Belgeden önemli alanları tespit et"""
     fields = {}
     
     # Tarih desenleri
     date_patterns = [
         (r'(\d{1,2})[\.\/](\d{1,2})[\.\/](\d{2,4})', 'DMY'),
         (r'(\d{4})[-](\d{1,2})[-](\d{1,2})', 'YMD'),
-        (r'(\d{1,2})[\.\/](\d{1,2})[\.\/](\d{2,4})', 'DMY'),
-        (r'(\d{2})[\.\/](\d{2})[\.\/](\d{4})', 'DMY2'),
         (r'(\d{1,2})\s+(Ocak|Şubat|Mart|Nisan|Mayıs|Haziran|Temmuz|Ağustos|Eylül|Ekim|Kasım|Aralık)\s+(\d{4})', 'TR_MONTH'),
         (r'(\d{1,2})\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})', 'EN_MONTH'),
     ]
@@ -608,10 +760,12 @@ def detect_important_fields(text: str) -> Dict[str, Any]:
                 if len(year) == 2:
                     year = '20' + year
                 fields['tarih'] = f"{day.zfill(2)}.{month.zfill(2)}.{year}"
+                break
             elif format_type == 'YMD':
                 year, month, day = match.groups()
                 fields['tarih'] = f"{day.zfill(2)}.{month.zfill(2)}.{year}"
-            elif format_type in ['TR_MONTH', 'EN_MONTH']:
+                break
+            else:
                 day, month_text, year = match.groups()
                 month_map = {
                     'Ocak': '01', 'Şubat': '02', 'Mart': '03', 'Nisan': '04',
@@ -623,13 +777,12 @@ def detect_important_fields(text: str) -> Dict[str, Any]:
                 }
                 month = month_map.get(month_text, '01')
                 fields['tarih'] = f"{day.zfill(2)}.{month}.{year}"
-            break
+                break
     
     # Tutar desenleri
     amount_patterns = [
-        r'(?:toplam|genel toplam|tutar|ödenecek|mevduat|fiyat|ücret|bedel)[\s:]*([\d.,]+)\s*(TL|USD|EUR|₺|\$|€|GBP|JPY)?',
+        r'(?:toplam|genel toplam|tutar|ödenecek|fiyat|ücret)[\s:]*([\d.,]+)\s*(TL|USD|EUR|₺|\$|€|GBP|JPY)?',
         r'([\d.,]+)\s*(TL|USD|EUR|₺|\$|€|GBP|JPY)',
-        r'(?:TL|USD|EUR|₺|\$|€|GBP|JPY)\s*([\d.,]+)',
     ]
     
     for pattern in amount_patterns:
@@ -642,26 +795,24 @@ def detect_important_fields(text: str) -> Dict[str, Any]:
             fields['tutar'] = f"{amount} {currency}"
             break
     
-    # Firma/Kişi adı
+    # Firma adı
     company_patterns = [
-        r'(?:firma|şirket|company|müşteri|customer|alıcı|satıcı|tedarikçi)[\s:]*([A-Za-zğüşıöçĞÜŞİÖÇ\s\.]+)',
+        r'(?:firma|şirket|company|müşteri|customer|alıcı|satıcı)[\s:]*([A-Za-zğüşıöçĞÜŞİÖÇ\s\.]+)',
         r'(?:adı|name|ünvan|unvan|title)[\s:]*([A-Za-zğüşıöçĞÜŞİÖÇ\s\.]+)',
-        r'^(.*?)(?:Ltd\.?|Şti\.?|A\.?Ş\.?|Inc\.?|Corp\.?|LLC)$',
     ]
     
     for pattern in company_patterns:
         match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
         if match:
             company = match.group(1).strip()
-            if len(company) > 2 and len(company) < 100:
+            if 2 < len(company) < 100:
                 fields['firma'] = company
                 break
     
     # Vergi numarası
     tax_patterns = [
-        r'(?:vergi no|tax id|vergi dairesi|tax office)[\s:]*(\d{10,11})',
-        r'(?:TC|kimlik no|TCKN|kimlik numarası)[\s:]*(\d{11})',
-        r'(?:VKN|vergi kimlik numarası)[\s:]*(\d{10})',
+        r'(?:vergi no|tax id|vkn)[\s:]*(\d{10,11})',
+        r'(?:TC|kimlik no|TCKN)[\s:]*(\d{11})',
     ]
     
     for pattern in tax_patterns:
@@ -676,50 +827,7 @@ def detect_important_fields(text: str) -> Dict[str, Any]:
     if match:
         fields['iban'] = match.group(1).replace(' ', '')
     
-    # Telefon
-    phone_pattern = r'(?:tel|telefon|phone)[\s:]*((?:\+90|0)?[0-9]{10,11})'
-    match = re.search(phone_pattern, text, re.IGNORECASE)
-    if match:
-        fields['telefon'] = match.group(1)
-    
-    # E-posta
-    email_pattern = r'([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})'
-    match = re.search(email_pattern, text)
-    if match:
-        fields['email'] = match.group(1)
-    
-    # Adres
-    address_patterns = [
-        r'(?:adres|address)[\s:]*([^\n]+)',
-        r'(?:mahalle|mah\.|sokak|sk\.|cadde|cad\.|bulvar)[\s:]*([^\n]+)',
-    ]
-    
-    for pattern in address_patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            fields['adres'] = match.group(1).strip()
-            break
-    
     return fields
-
-
-def calculate_file_hash(file_path: str) -> str:
-    """Dosya hash'i hesapla (değişiklik kontrolü için)"""
-    try:
-        with open(file_path, 'rb') as f:
-            return hashlib.md5(f.read()).hexdigest()
-    except:
-        return ""
-
-
-def ensure_directory(directory: str) -> bool:
-    """Klasörün var olduğundan emin ol"""
-    try:
-        if not os.path.exists(directory):
-            os.makedirs(directory)
-        return True
-    except:
-        return False
 
 
 # ========== OCR TEMİZLEME FONKSİYONLARI ==========
@@ -734,45 +842,42 @@ def clean_ocr_text(text: str) -> Tuple[str, List[str]]:
     Returns:
         (temizlenmiş_metin, silinen_satırlar)
     """
+    if not text:
+        return "", []
+    
     lines = text.split('\n')
     cleaned_lines = []
     removed_lines = []
     
     # Gereksiz desenler
     unwanted_patterns = [
-        r'\d{1,2}:\d{2}(?::\d{2})?(?:\s*(?:AM|PM|am|pm))?',  # Saat: 14:30, 2:30 PM
-        r'\d{1,2}[./]\d{1,2}[./]\d{2,4}',  # Tarih: 15.03.2024
-        r'Volte?\s*\d{1,2}:\d{2}',  # Volte 14:30
+        r'\d{1,2}:\d{2}(?::\d{2})?(?:\s*(?:AM|PM|am|pm))?',  # Saat
+        r'\d{1,2}[./]\d{1,2}[./]\d{2,4}',  # Tarih
+        r'Volte?\s*\d{1,2}:\d{2}',  # Volte
         r'(?:Turkcell|Vodafone|Türk Telekom|Türkcell)\s*\d{1,2}:\d{2}',
         r'Ekran\s*(?:Alıntısı|Görüntüsü|Fotoğrafi)',  # Ekran Alıntısı
-        r'Screen\s*(?:Shot|Capture)',  # Screen Shot/Capture
-        r'Screenshot',  # Screenshot
-        r'Captur(?:e|ed)',  # Capture/Captured
+        r'Screen\s*(?:Shot|Capture)',  # Screen Shot
+        r'Screenshot',
+        r'Captur(?:e|ed)',
         r'^\s*\d+\s*$',  # Sadece rakam
         r'^\s*[•\-*]\s*$',  # Sadece madde işareti
         r'^\s*[|\\/]\s*$',  # Sadece çizgi
-        r'\d{1,2}\s+(?:Ocak|Şubat|Mart|Nisan|Mayıs|Haziran|Temmuz|Ağustos|Eylül|Ekim|Kasım|Aralık)\s+\d{4}',  # Tarih formatı
-        r'\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}',
         r'(?:Sayfa|Page)\s+\d+\s*(?:/|of)\s*\d+',  # Sayfa numaraları
         r'^\s*[_\-\=\*]{3,}\s*$',  # Çizgiler
         r'^\s*[▌▐▀▄█▓▒░]\s*$',  # Blok karakterler
     ]
     
-    # Çok kısa satırları filtrele (3 karakterden az)
     for line in lines:
         line = line.strip()
         
-        # Boş satırı kontrol et
         if not line:
             cleaned_lines.append('')
             continue
         
-        # Çok kısa satırları filtrele
         if len(line) < 3:
             removed_lines.append(line)
             continue
         
-        # Gereksiz desenleri kontrol et
         is_unwanted = False
         for pattern in unwanted_patterns:
             if re.search(pattern, line, re.IGNORECASE):
@@ -796,7 +901,7 @@ def calculate_ocr_confidence(text: str) -> float:
     Returns:
         Güven skoru (0-100)
     """
-    if not text.strip():
+    if not text or not text.strip():
         return 0
     
     words = text.split()
@@ -806,43 +911,33 @@ def calculate_ocr_confidence(text: str) -> float:
     if total_words == 0:
         return 0
     
-    # Ortalama kelime uzunluğu (normalde 4-8 arası olmalı)
     avg_word_length = total_chars / total_words
-    
-    # Anormal kısa kelimeler
     very_short_words = sum(1 for w in words if len(w) <= 2)
     short_ratio = very_short_words / total_words
     
-    # Özel karakter oranı
     special_chars = sum(1 for c in text if not c.isalnum() and not c.isspace())
     special_ratio = special_chars / total_chars if total_chars > 0 else 0
     
-    # Rakam oranı (çok fazla rakam OCR hatası olabilir)
     digit_chars = sum(1 for c in text if c.isdigit())
     digit_ratio = digit_chars / total_chars if total_chars > 0 else 0
     
-    # Güven skoru hesapla
     confidence = 100
     
-    # Ortalama kelime uzunluğu çok düşükse
     if avg_word_length < 3:
         confidence -= 30
     elif avg_word_length > 15:
         confidence -= 20
     
-    # Çok fazla kısa kelime varsa
     if short_ratio > 0.3:
         confidence -= 25
     elif short_ratio > 0.2:
         confidence -= 15
     
-    # Çok fazla özel karakter varsa
     if special_ratio > 0.2:
         confidence -= 20
     elif special_ratio > 0.1:
         confidence -= 10
     
-    # Çok fazla rakam varsa (sayısal belgeler hariç)
     if digit_ratio > 0.3:
         confidence -= 15
     elif digit_ratio > 0.2:
@@ -861,6 +956,9 @@ def merge_intelligent_lines(text: str) -> str:
     Returns:
         Birleştirilmiş metin
     """
+    if not text:
+        return ""
+    
     lines = text.split('\n')
     merged = []
     i = 0
@@ -868,22 +966,20 @@ def merge_intelligent_lines(text: str) -> str:
     while i < len(lines):
         current_line = lines[i].strip()
         
-        # Boş satır
         if not current_line:
             merged.append('')
             i += 1
             continue
         
-        # Sonraki satır var mı?
         if i < len(lines) - 1:
             next_line = lines[i+1].strip()
             
-            # Eğer sonraki satır küçük harfle başlıyorsa ve
-            # mevcut satır tire ile bitmiyorsa (kelime bölünmesi değilse)
-            if next_line and next_line[0].islower() and not current_line.endswith('-'):
-                # Birleştir
+            if (next_line and next_line[0].islower() and 
+                not current_line[-1] in '.!?:;,' and 
+                not current_line.endswith('-')):
+                
                 current_line += ' ' + next_line
-                i += 2  # Bir sonraki satırı atla
+                i += 2
                 continue
         
         merged.append(current_line)
@@ -902,10 +998,10 @@ def normalize_whitespace(text: str) -> str:
     Returns:
         Düzenlenmiş metin
     """
-    # Fazla boşlukları temizle
-    text = re.sub(r' +', ' ', text)
+    if not text:
+        return ""
     
-    # Fazla satır sonlarını temizle
+    text = re.sub(r' +', ' ', text)
     text = re.sub(r'\n\s*\n\s*\n', '\n\n', text)
     
     return text.strip()
@@ -924,62 +1020,20 @@ def fix_common_ocr_errors(text: str) -> str:
     if not text:
         return ""
     
-    # Yaygın hata düzeltmeleri
     replacements = [
-        # Sayısal hatalar
-        (r'\b0\b', 'O'),  # Tek başına 0 -> O
-        (r'\b1\b', 'l'),  # Tek başına 1 -> l
-        (r'\b5\b', 'S'),  # Tek başına 5 -> S
-        
-        # Karakter karışıklıkları
-        ('§', 'S'),  # Paragraf işareti -> S
-        ('©', 'C'),  # Copyright -> C
-        ('®', 'R'),  # Registered -> R
-        ('™', 'TM'),  # Trademark -> TM
-        ('•', '-'),  # Madde işareti -> -
-        ('·', '.'),  # Orta nokta -> .
-        ('…', '...'),  # Üç nokta -> ...
-        ('–', '-'),  # Uzun tire -> -
-        ('—', '-'),  # Uzun tire -> -
-        ('"', '"'),  # Tırnak işareti
-        ('"', '"'),  # Tırnak işareti
-        ('´', "'"),  # Kesme işareti
-        ('`', "'"),  # Kesme işareti
-        
-        # Türkçe karakter düzeltmeleri
-        ('Ý', 'İ'),  # Y. harfi -> İ
-        ('Þ', 'Ş'),  # TH -> Ş
-        ('ð', 'ğ'),  # Ð -> ğ
-        ('ý', 'ı'),  # ý -> ı
-        ('Ã', 'Ç'),  # Ã -> Ç
-        ('ã', 'ç'),  # ã -> ç
-        ('Ä', 'Ö'),  # Ä -> Ö
-        ('ä', 'ö'),  # ä -> ö
-        ('Ü', 'Ü'),  # Ü zaten doğru
-        ('ü', 'ü'),  # ü zaten doğru
-        ('Ë', 'E'),  # Ë -> E
-        ('ë', 'e'),  # ë -> e
-        
-        # İngilizce karakter düzeltmeleri
-        ('À', 'A'), ('Á', 'A'), ('Â', 'A'), ('Ã', 'A'),
-        ('à', 'a'), ('á', 'a'), ('â', 'a'), ('ã', 'a'),
-        ('È', 'E'), ('É', 'E'), ('Ê', 'E'), ('Ë', 'E'),
-        ('è', 'e'), ('é', 'e'), ('ê', 'e'), ('ë', 'e'),
-        ('Ì', 'I'), ('Í', 'I'), ('Î', 'I'), ('Ï', 'I'),
-        ('ì', 'i'), ('í', 'i'), ('î', 'i'), ('ï', 'i'),
-        ('Ò', 'O'), ('Ó', 'O'), ('Ô', 'O'), ('Õ', 'O'),
-        ('ò', 'o'), ('ó', 'o'), ('ô', 'o'), ('õ', 'o'),
-        ('Ù', 'U'), ('Ú', 'U'), ('Û', 'U'), ('Ü', 'U'),
-        ('ù', 'u'), ('ú', 'u'), ('û', 'u'), ('ü', 'u'),
-        ('Ñ', 'N'), ('ñ', 'n'),
+        (r'\b0\b', 'O'), (r'\b1\b', 'l'), (r'\b5\b', 'S'),
+        ('§', 'S'), ('©', 'C'), ('®', 'R'), ('™', 'TM'),
+        ('•', '-'), ('·', '.'), ('…', '...'), ('–', '-'), ('—', '-'),
+        ('"', '"'), ('"', '"'), ('´', "'"), ('`', "'"),
+        ('Ý', 'İ'), ('Þ', 'Ş'), ('ð', 'ğ'), ('ý', 'ı'),
+        ('Ã', 'Ç'), ('ã', 'ç'), ('Ä', 'Ö'), ('ä', 'ö'),
+        ('Ë', 'E'), ('ë', 'e'),
     ]
     
     for old, new in replacements:
-        if isinstance(old, tuple) or (isinstance(old, str) and old.startswith('\\')):
-            # Regex pattern
+        if isinstance(old, str) and old.startswith('\\'):
             text = re.sub(old, new, text)
         else:
-            # Direkt değiştirme
             text = text.replace(old, new)
     
     return text
@@ -987,6 +1041,8 @@ def fix_common_ocr_errors(text: str) -> str:
 
 # ========== WORD DÖNÜŞÜMLERİ ==========
 
+@timer
+@handle_exceptions
 def word_to_pdf(input_path: str, output_path: str, 
                quality: ConversionQuality = ConversionQuality.PROFESSIONAL) -> Tuple[bool, str, ConversionMetrics]:
     """
@@ -1005,17 +1061,22 @@ def word_to_pdf(input_path: str, output_path: str,
         
         doc = Document(input_path)
         
+        # Kalite ayarları
+        quality_settings = {
+            ConversionQuality.DRAFT: {'title_size': 14, 'heading_size': 12, 'normal_size': 10, 'line_height': 0.5},
+            ConversionQuality.STANDARD: {'title_size': 15, 'heading_size': 13, 'normal_size': 11, 'line_height': 0.55},
+            ConversionQuality.PROFESSIONAL: {'title_size': 16, 'heading_size': 14, 'normal_size': 11, 'line_height': 0.6},
+            ConversionQuality.PREMIUM: {'title_size': 18, 'heading_size': 16, 'normal_size': 12, 'line_height': 0.7},
+        }
+        settings = quality_settings.get(quality, quality_settings[ConversionQuality.PROFESSIONAL])
+        
         c = canvas.Canvas(output_path, pagesize=A4)
         width, height = A4
         
         left_margin = 2 * cm
         right_margin = width - 2 * cm
         y = height - 2 * cm
-        line_height = 0.6 * cm
-        
-        title_size = 16
-        heading_size = 14
-        normal_size = 11
+        line_height = settings['line_height'] * cm
         
         for paragraph in doc.paragraphs:
             if not paragraph.text.strip():
@@ -1023,20 +1084,17 @@ def word_to_pdf(input_path: str, output_path: str,
                 continue
             
             style_name = paragraph.style.name.lower() if paragraph.style else ""
-            font_size = normal_size
+            font_size = settings['normal_size']
             is_bold = False
             
             if 'title' in style_name or 'heading 1' in style_name:
-                font_size = title_size
+                font_size = settings['title_size']
                 is_bold = True
             elif 'heading 2' in style_name:
-                font_size = heading_size
+                font_size = settings['heading_size']
                 is_bold = True
             
-            if is_bold:
-                c.setFont("Helvetica-Bold", font_size)
-            else:
-                c.setFont("Helvetica", font_size)
+            c.setFont("Helvetica-Bold" if is_bold else "Helvetica", font_size)
             
             text = paragraph.text.strip()
             words = text.split()
@@ -1044,7 +1102,7 @@ def word_to_pdf(input_path: str, output_path: str,
             
             for word in words:
                 test_line = current_line + " " + word if current_line else word
-                line_width = c.stringWidth(test_line, "Helvetica" if not is_bold else "Helvetica-Bold", font_size)
+                line_width = c.stringWidth(test_line, "Helvetica-Bold" if is_bold else "Helvetica", font_size)
                 
                 if line_width < (right_margin - left_margin):
                     current_line = test_line
@@ -1052,10 +1110,7 @@ def word_to_pdf(input_path: str, output_path: str,
                     if y < line_height:
                         c.showPage()
                         y = height - 2 * cm
-                        if is_bold:
-                            c.setFont("Helvetica-Bold", font_size)
-                        else:
-                            c.setFont("Helvetica", font_size)
+                        c.setFont("Helvetica-Bold" if is_bold else "Helvetica", font_size)
                     
                     c.drawString(left_margin, y, current_line)
                     y -= line_height
@@ -1065,14 +1120,12 @@ def word_to_pdf(input_path: str, output_path: str,
                 if y < line_height:
                     c.showPage()
                     y = height - 2 * cm
-                
                 c.drawString(left_margin, y, current_line)
                 y -= line_height * 1.2
         
         c.save()
         
         metrics.output_size = os.path.getsize(output_path)
-        metrics.processing_time = 0
         metrics.compression_ratio = metrics.output_size / metrics.input_size if metrics.input_size > 0 else 1
         metrics.quality_score = 90
         metrics.complexity = DocumentComplexity.MODERATE
@@ -1080,13 +1133,15 @@ def word_to_pdf(input_path: str, output_path: str,
         logger.info(f"✅ Word -> PDF dönüşüm başarılı: {input_path}")
         return True, output_path, metrics
         
-    except Exception as e:
-        logger.error(f"❌ Word -> PDF dönüşüm hatası: {e}")
-        traceback.print_exc()
-        metrics.warnings.append(str(e))
+    except ImportError as e:
+        error_msg = f"Gerekli kütüphane bulunamadı: {e}"
+        logger.error(f"❌ {error_msg}")
+        metrics.warnings.append(error_msg)
         return False, "", metrics
 
 
+@timer
+@handle_exceptions
 def word_to_excel(input_path: str, output_path: str, 
                  quality: ConversionQuality = ConversionQuality.PROFESSIONAL) -> Tuple[bool, str, ConversionMetrics]:
     """
@@ -1102,44 +1157,23 @@ def word_to_excel(input_path: str, output_path: str,
         from openpyxl import Workbook
         from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
         from openpyxl.utils import get_column_letter
-        from openpyxl.worksheet.page import PageMargins
         
         doc = Document(input_path)
         
-        # Kalite ayarları
-        font_size = 11
-        header_font_size = 12
+        # Verileri topla
+        data = []
+        for para in doc.paragraphs:
+            if para.text.strip():
+                data.append([para.text.strip()])
         
-        if quality == ConversionQuality.PREMIUM:
-            font_size = 12
-            header_font_size = 13
-        
-        # Önce tabloları dene
-        tables_data = []
+        # Tablo varsa ekle
         for table in doc.tables:
-            table_rows = []
             for row in table.rows:
                 row_data = [cell.text.strip() for cell in row.cells]
                 if any(row_data):
-                    table_rows.append(row_data)
-            if table_rows:
-                tables_data.append(table_rows)
+                    data.append(row_data)
         
-        # Tablo varsa onları kullan
-        if tables_data:
-            main_table = max(tables_data, key=len)
-            if main_table[0] and any(main_table[0]):
-                df = pd.DataFrame(main_table[1:], columns=main_table[0])
-            else:
-                df = pd.DataFrame(main_table)
-            changes.append(f"{len(df)} satırlı tablo bulundu")
-        else:
-            # Normal metin
-            data = []
-            for para in doc.paragraphs:
-                if para.text.strip():
-                    data.append([para.text.strip()])
-            df = pd.DataFrame(data, columns=['İçerik'])
+        df = pd.DataFrame(data, columns=['İçerik'] if len(data[0]) == 1 else None)
         
         # Excel oluştur
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
@@ -1148,41 +1182,11 @@ def word_to_excel(input_path: str, output_path: str,
             workbook = writer.book
             worksheet = writer.sheets['Word İçeriği']
             
-            # Başlık stili
-            header_font = Font(name='Calibri', size=header_font_size, bold=True, color="FFFFFF")
-            header_fill = PatternFill(start_color="2E75B6", end_color="2E75B6", fill_type="solid")
-            header_alignment = Alignment(horizontal="center", vertical="center")
-            
-            thin_border = Border(
-                left=Side(style='thin'),
-                right=Side(style='thin'),
-                top=Side(style='thin'),
-                bottom=Side(style='thin')
-            )
-            
-            light_gray_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
-            
-            # Başlık satırını formatla
+            # Stil ayarları
             if len(df) > 0:
                 for cell in worksheet[1]:
-                    cell.font = header_font
-                    cell.fill = header_fill
-                    cell.alignment = header_alignment
-                    cell.border = thin_border
-            
-            # Veri hücrelerini formatla
-            for row_idx, row in enumerate(worksheet.iter_rows(min_row=2, max_row=len(df)+1), 2):
-                for cell in row:
-                    cell.font = Font(name='Calibri', size=font_size)
-                    cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
-                    cell.border = thin_border
-                    
-                    if row_idx % 2 == 0:
-                        cell.fill = light_gray_fill
-                    
-                    if isinstance(cell.value, (int, float)):
-                        cell.number_format = '#,##0.00'
-                        cell.alignment = Alignment(horizontal="right", vertical="center")
+                    cell.font = Font(bold=True)
+                    cell.alignment = Alignment(horizontal="center")
             
             # Sütun genişliklerini ayarla
             for column in worksheet.columns:
@@ -1198,21 +1202,22 @@ def word_to_excel(input_path: str, output_path: str,
                 worksheet.column_dimensions[column_letter].width = adjusted_width
         
         metrics.output_size = os.path.getsize(output_path)
-        metrics.processing_time = 0
         metrics.compression_ratio = metrics.output_size / metrics.input_size if metrics.input_size > 0 else 1
-        metrics.quality_score = 90
-        metrics.complexity = DocumentComplexity.MODERATE if len(df) > 100 else DocumentComplexity.SIMPLE
+        metrics.quality_score = 85
+        metrics.complexity = DocumentComplexity.SIMPLE if len(df) < 50 else DocumentComplexity.MODERATE
         
         logger.info(f"✅ Word -> Excel dönüşüm başarılı: {input_path}")
         return True, output_path, metrics
         
-    except Exception as e:
-        logger.error(f"❌ Word -> Excel dönüşüm hatası: {e}")
-        traceback.print_exc()
-        metrics.warnings.append(str(e))
+    except ImportError as e:
+        error_msg = f"Gerekli kütüphane bulunamadı: {e}"
+        logger.error(f"❌ {error_msg}")
+        metrics.warnings.append(error_msg)
         return False, "", metrics
 
 
+@timer
+@handle_exceptions
 def word_to_pptx(input_path: str, output_path: str,
                 quality: ConversionQuality = ConversionQuality.PROFESSIONAL) -> Tuple[bool, str, ConversionMetrics]:
     """
@@ -1231,118 +1236,42 @@ def word_to_pptx(input_path: str, output_path: str,
         doc = Document(input_path)
         prs = Presentation()
         
-        title_font_size = 48
-        heading_font_size = 32
-        content_font_size = 20
-        items_per_slide = 5
-        
-        if quality == ConversionQuality.PREMIUM:
-            title_font_size = 54
-            heading_font_size = 36
-            content_font_size = 22
-            items_per_slide = 4
-        elif quality == ConversionQuality.DRAFT:
-            title_font_size = 40
-            heading_font_size = 28
-            content_font_size = 18
-            items_per_slide = 6
-        
-        title_slide_layout = prs.slide_layouts[0]
-        content_slide_layout = prs.slide_layouts[1]
-        section_header_layout = prs.slide_layouts[2]
+        quality_settings = {
+            ConversionQuality.DRAFT: {'title': 40, 'heading': 28, 'content': 18, 'per_slide': 6},
+            ConversionQuality.STANDARD: {'title': 44, 'heading': 30, 'content': 20, 'per_slide': 5},
+            ConversionQuality.PROFESSIONAL: {'title': 48, 'heading': 32, 'content': 20, 'per_slide': 5},
+            ConversionQuality.PREMIUM: {'title': 54, 'heading': 36, 'content': 22, 'per_slide': 4},
+        }
+        settings = quality_settings.get(quality, quality_settings[ConversionQuality.PROFESSIONAL])
         
         # Ana başlık slaytı
-        slide = prs.slides.add_slide(title_slide_layout)
+        slide = prs.slides.add_slide(prs.slide_layouts[0])
         title = slide.shapes.title
-        subtitle = slide.placeholders[1]
-        
         if title:
             title.text = "WORD DÖKÜMANI DÖNÜŞÜMÜ"
-            title.text_frame.paragraphs[0].font.size = Pt(title_font_size)
+            title.text_frame.paragraphs[0].font.size = Pt(settings['title'])
             title.text_frame.paragraphs[0].font.color.rgb = RGBColor(0, 51, 102)
-            title.text_frame.paragraphs[0].font.bold = True
-        
-        if subtitle:
-            subtitle.text = f"Kaynak: {os.path.basename(input_path)}\nTarih: {datetime.datetime.now().strftime('%d.%m.%Y')}"
-            subtitle.text_frame.paragraphs[0].font.size = Pt(20)
-        
-        changes.append("Ana başlık slaytı oluşturuldu")
-        
-        # Paragrafları topla
-        all_paragraphs = []
-        for para in doc.paragraphs:
-            if para.text.strip():
-                style_name = para.style.name.lower() if para.style else "normal"
-                is_heading = any(x in style_name for x in ['heading', 'title', 'başlık'])
-                
-                all_paragraphs.append({
-                    'text': para.text.strip(),
-                    'is_heading': is_heading,
-                })
-        
-        changes.append(f"{len(all_paragraphs)} paragraf analiz edildi")
         
         # İçerik slaytları
-        current_slide = None
-        current_text_frame = None
-        slide_count = 0
+        paragraphs = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
         
-        for i, para in enumerate(all_paragraphs):
-            start_new_slide = False
+        for i in range(0, len(paragraphs), settings['per_slide']):
+            slide = prs.slides.add_slide(prs.slide_layouts[1])
+            title = slide.shapes.title
+            if title:
+                title.text = f"İçerik - Bölüm {i//settings['per_slide'] + 1}"
             
-            if para['is_heading']:
-                start_new_slide = True
-            elif current_slide is None:
-                start_new_slide = True
-            elif i % items_per_slide == 0:
-                start_new_slide = True
+            content = slide.placeholders[1]
+            tf = content.text_frame
             
-            if start_new_slide:
-                slide_count += 1
-                
-                if para['is_heading']:
-                    slide = prs.slides.add_slide(section_header_layout)
-                    title = slide.shapes.title
-                    if title:
-                        title.text = para['text'][:50]
-                        title.text_frame.paragraphs[0].font.size = Pt(36)
-                        title.text_frame.paragraphs[0].font.color.rgb = RGBColor(0, 51, 102)
-                        title.text_frame.paragraphs[0].font.bold = True
-                    current_text_frame = None
-                    changes.append(f"Başlık slaytı oluşturuldu: {para['text'][:30]}...")
-                else:
-                    slide = prs.slides.add_slide(content_slide_layout)
-                    
-                    title = slide.shapes.title
-                    if title:
-                        title.text = f"İçerik - Sayfa {slide_count}"
-                        title.text_frame.paragraphs[0].font.size = Pt(heading_font_size)
-                        title.text_frame.paragraphs[0].font.color.rgb = RGBColor(0, 51, 102)
-                        title.text_frame.paragraphs[0].font.bold = True
-                    
-                    content = slide.placeholders[1]
-                    text_frame = content.text_frame
-                    text_frame.clear()
-                    
-                    p = text_frame.add_paragraph()
-                    p.text = para['text']
-                    p.font.size = Pt(content_font_size)
-                    p.font.color.rgb = RGBColor(0, 0, 0)
-                    
-                    current_text_frame = text_frame
-                    changes.append(f"İçerik slaytı oluşturuldu")
-            else:
-                if current_text_frame:
-                    p = current_text_frame.add_paragraph()
-                    p.text = para['text']
-                    p.font.size = Pt(content_font_size - 2)
-                    p.font.color.rgb = RGBColor(0, 0, 0)
-                    changes.append(f"Slayta içerik eklendi")
+            for para in paragraphs[i:i+settings['per_slide']]:
+                p = tf.add_paragraph()
+                p.text = para
+                p.font.size = Pt(settings['content'])
         
         prs.save(output_path)
         
         metrics.output_size = os.path.getsize(output_path)
-        metrics.processing_time = 0
         metrics.compression_ratio = metrics.output_size / metrics.input_size if metrics.input_size > 0 else 1
         metrics.quality_score = 85
         metrics.complexity = DocumentComplexity.MODERATE
@@ -1350,17 +1279,19 @@ def word_to_pptx(input_path: str, output_path: str,
         logger.info(f"✅ Word -> PowerPoint dönüşüm başarılı: {input_path}")
         return True, output_path, metrics
         
-    except Exception as e:
-        logger.error(f"❌ Word -> PowerPoint dönüşüm hatası: {e}")
-        traceback.print_exc()
-        metrics.warnings.append(str(e))
+    except ImportError as e:
+        error_msg = f"Gerekli kütüphane bulunamadı: {e}"
+        logger.error(f"❌ {error_msg}")
+        metrics.warnings.append(error_msg)
         return False, "", metrics
 
 
+@timer
+@handle_exceptions
 def word_to_text(input_path: str, output_path: str,
                 quality: ConversionQuality = ConversionQuality.PROFESSIONAL) -> Tuple[bool, str, ConversionMetrics]:
     """
-    Word -> Metin dönüşümü (YENİ)
+    Word -> Metin dönüşümü
     """
     metrics = ConversionMetrics()
     metrics.input_size = os.path.getsize(input_path)
@@ -1388,7 +1319,6 @@ def word_to_text(input_path: str, output_path: str,
             f.write(text)
         
         metrics.output_size = os.path.getsize(output_path)
-        metrics.processing_time = 0
         metrics.compression_ratio = metrics.output_size / metrics.input_size if metrics.input_size > 0 else 1
         metrics.quality_score = 90
         metrics.complexity = DocumentComplexity.SIMPLE
@@ -1398,13 +1328,14 @@ def word_to_text(input_path: str, output_path: str,
         
     except Exception as e:
         logger.error(f"❌ Word -> Metin dönüşüm hatası: {e}")
-        traceback.print_exc()
         metrics.warnings.append(str(e))
         return False, "", metrics
 
 
 # ========== EXCEL DÖNÜŞÜMLERİ ==========
 
+@timer
+@handle_exceptions
 def excel_to_pdf(input_path: str, output_path: str,
                 quality: ConversionQuality = ConversionQuality.PROFESSIONAL) -> Tuple[bool, str, ConversionMetrics]:
     """
@@ -1460,7 +1391,6 @@ def excel_to_pdf(input_path: str, output_path: str,
         c.save()
         
         metrics.output_size = os.path.getsize(output_path)
-        metrics.processing_time = 0
         metrics.compression_ratio = metrics.output_size / metrics.input_size if metrics.input_size > 0 else 1
         metrics.quality_score = 85
         metrics.complexity = DocumentComplexity.MODERATE
@@ -1468,13 +1398,15 @@ def excel_to_pdf(input_path: str, output_path: str,
         logger.info(f"✅ Excel -> PDF dönüşüm başarılı: {input_path}")
         return True, output_path, metrics
         
-    except Exception as e:
-        logger.error(f"❌ Excel -> PDF dönüşüm hatası: {e}")
-        traceback.print_exc()
-        metrics.warnings.append(str(e))
+    except ImportError as e:
+        error_msg = f"Gerekli kütüphane bulunamadı: {e}"
+        logger.error(f"❌ {error_msg}")
+        metrics.warnings.append(error_msg)
         return False, "", metrics
 
 
+@timer
+@handle_exceptions
 def excel_to_word(input_path: str, output_path: str,
                  quality: ConversionQuality = ConversionQuality.PROFESSIONAL) -> Tuple[bool, str, ConversionMetrics]:
     """
@@ -1487,7 +1419,7 @@ def excel_to_word(input_path: str, output_path: str,
     try:
         import pandas as pd
         from docx import Document
-        from docx.shared import Inches, Cm, Pt, RGBColor
+        from docx.shared import Cm, Pt, RGBColor
         from docx.enum.text import WD_ALIGN_PARAGRAPH
         from docx.enum.table import WD_TABLE_ALIGNMENT
         from docx.oxml.ns import qn
@@ -1495,46 +1427,25 @@ def excel_to_word(input_path: str, output_path: str,
         
         excel_file = pd.ExcelFile(input_path)
         sheet_names = excel_file.sheet_names
-        metrics.input_size = os.path.getsize(input_path)
         
         doc = Document()
         
-        # Sayfa yapısı ayarları
+        # Sayfa yapısı
         section = doc.sections[0]
         section.page_width = Cm(21)
         section.page_height = Cm(29.7)
         section.left_margin = Cm(1.5)
         section.right_margin = Cm(1.5)
-        section.top_margin = Cm(1.5)
-        section.bottom_margin = Cm(1.5)
         
         # Ana başlık
         title = doc.add_heading('EXCEL DÖKÜMANI DÖNÜŞÜMÜ', 0)
         title.alignment = WD_ALIGN_PARAGRAPH.CENTER
         run = title.runs[0]
-        run.font.size = Pt(28)
+        run.font.size = Pt(24)
         run.font.bold = True
-        run.font.name = 'Calibri'
         run.font.color.rgb = RGBColor(0, 51, 102)
         
-        changes.append("Ana başlık eklendi")
-        
-        info_para = doc.add_paragraph()
-        info_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = info_para.add_run(f"📊 Kaynak: {os.path.basename(input_path)}")
-        run.font.size = Pt(12)
-        run.font.color.rgb = RGBColor(100, 100, 100)
-        
-        info_para2 = doc.add_paragraph()
-        info_para2.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = info_para2.add_run(f"📅 Dönüşüm: {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}")
-        run.font.size = Pt(12)
-        run.font.color.rgb = RGBColor(100, 100, 100)
-        
-        doc.add_paragraph('_' * 80)
-        doc.add_paragraph()
-        
-        doc.add_paragraph(f"📑 Toplam {len(sheet_names)} sayfa", style='Intense Quote')
+        doc.add_paragraph(f"📊 Kaynak: {os.path.basename(input_path)}")
         doc.add_paragraph()
         
         total_rows = 0
@@ -1547,116 +1458,61 @@ def excel_to_word(input_path: str, output_path: str,
             if sheet_idx > 0:
                 doc.add_page_break()
             
-            heading = doc.add_heading(f'Sayfa {sheet_idx + 1}: {sheet_name}', level=1)
-            for run in heading.runs:
-                run.font.size = Pt(18)
-                run.font.color.rgb = RGBColor(0, 102, 204)
+            doc.add_heading(f'Sayfa {sheet_idx + 1}: {sheet_name}', level=1)
             
             if df.empty:
                 doc.add_paragraph("📭 Bu sayfa boş")
-                doc.add_paragraph()
-                changes.append(f"Sayfa {sheet_name} boş")
                 continue
             
-            col_count = len(df.columns)
+            # Tablo oluştur
+            rows, cols = df.shape
+            table = doc.add_table(rows=rows+1, cols=cols)
+            table.style = 'Light Grid Accent 1'
+            table.alignment = WD_TABLE_ALIGNMENT.CENTER
             
-            min_widths = []
-            for i, col in enumerate(df.columns):
-                max_len = len(str(col))
-                for val in df.iloc[:, i]:
-                    if val != '':
-                        max_len = max(max_len, len(str(val)))
-                min_width = max(max_len * 0.15, 2)
-                min_widths.append(min_width)
-            
-            total_min_width = sum(min_widths)
-            available_width_cm = 18
-            
-            if total_min_width > available_width_cm:
-                scale_factor = available_width_cm / total_min_width
-                col_widths = [w * scale_factor for w in min_widths]
-                changes.append(f"Sütun genişlikleri %{(1-scale_factor)*100:.0f} küçültüldü")
-            else:
-                extra_space = available_width_cm - total_min_width
-                extra_per_col = extra_space / col_count
-                col_widths = [w + extra_per_col for w in min_widths]
-                changes.append(f"Sütun genişlikleri optimize edildi")
-            
-            rows_per_page = 30
-            total_rows_sheet = len(df)
-            
-            for page_start in range(0, total_rows_sheet, rows_per_page):
-                page_end = min(page_start + rows_per_page, total_rows_sheet)
-                page_df = df.iloc[page_start:page_end]
+            # Başlık satırı
+            for col in range(cols):
+                cell = table.cell(0, col)
+                cell.text = str(df.columns[col])
                 
-                if page_start > 0:
-                    doc.add_page_break()
-                    doc.add_heading(f'{sheet_name} - Devam (Sayfa {page_start//rows_per_page + 2})', level=2)
+                # Stil
+                tc = cell._tc
+                tcPr = tc.get_or_add_tcPr()
+                shd = OxmlElement('w:shd')
+                shd.set(qn('w:fill'), '2E75B6')
+                tcPr.append(shd)
                 
-                rows, cols = page_df.shape
-                table = doc.add_table(rows=rows+1, cols=cols)
-                table.style = 'Light Grid Accent 1'
-                table.alignment = WD_TABLE_ALIGNMENT.CENTER
-                table.autofit = False
-                
-                for i, width in enumerate(col_widths):
-                    for row in table.rows:
-                        row.cells[i].width = Cm(width)
-                
-                # BAŞLIK SATIRI
+                for paragraph in cell.paragraphs:
+                    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    run = paragraph.runs[0]
+                    run.font.bold = True
+                    run.font.color.rgb = RGBColor(255, 255, 255)
+            
+            # Veri satırları
+            for row in range(rows):
                 for col in range(cols):
-                    cell = table.cell(0, col)
-                    cell.text = str(df.columns[col])
+                    cell = table.cell(row+1, col)
+                    value = df.iloc[row, col]
                     
-                    tc = cell._tc
-                    tcPr = tc.get_or_add_tcPr()
-                    shd = OxmlElement('w:shd')
-                    shd.set(qn('w:fill'), '2E75B6')
-                    tcPr.append(shd)
-                    
-                    for paragraph in cell.paragraphs:
-                        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                        run = paragraph.runs[0]
-                        run.font.bold = True
-                        run.font.size = Pt(12)
-                        run.font.name = 'Calibri'
-                        run.font.color.rgb = RGBColor(255, 255, 255)
-                
-                # VERİ SATIRLARI
-                for row in range(rows):
-                    for col in range(cols):
-                        cell = table.cell(row+1, col)
-                        value = page_df.iloc[row, col]
-                        
-                        if isinstance(value, (int, float)):
-                            if isinstance(value, float) and not value.is_integer():
-                                cell.text = f"{value:.2f}".replace('.', ',')
-                            else:
-                                cell.text = str(int(value) if isinstance(value, float) else value)
+                    if isinstance(value, (int, float)):
+                        if isinstance(value, float) and not value.is_integer():
+                            cell.text = f"{value:.2f}".replace('.', ',')
                         else:
-                            cell.text = str(value)
-                        
-                        if row % 2 == 0:
-                            tc = cell._tc
-                            tcPr = tc.get_or_add_tcPr()
-                            shd = OxmlElement('w:shd')
-                            shd.set(qn('w:fill'), 'F2F2F2')
-                            tcPr.append(shd)
-                        
-                        for paragraph in cell.paragraphs:
-                            if isinstance(page_df.iloc[row, col], (int, float)):
-                                paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                            else:
-                                paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
-                            
-                            run = paragraph.runs[0]
-                            run.font.size = Pt(10)
-                            run.font.name = 'Calibri'
+                            cell.text = str(int(value) if isinstance(value, float) else value)
+                    else:
+                        cell.text = str(value)
+                    
+                    # Alternatif satır renkleri
+                    if row % 2 == 0:
+                        tc = cell._tc
+                        tcPr = tc.get_or_add_tcPr()
+                        shd = OxmlElement('w:shd')
+                        shd.set(qn('w:fill'), 'F2F2F2')
+                        tcPr.append(shd)
         
         doc.save(output_path)
         
         metrics.output_size = os.path.getsize(output_path)
-        metrics.processing_time = 0
         metrics.compression_ratio = metrics.output_size / metrics.input_size if metrics.input_size > 0 else 1
         metrics.quality_score = 90
         metrics.complexity = DocumentComplexity.COMPLEX if total_rows > 500 else DocumentComplexity.MODERATE
@@ -1664,13 +1520,15 @@ def excel_to_word(input_path: str, output_path: str,
         logger.info(f"✅ Excel -> Word dönüşüm başarılı: {input_path}")
         return True, output_path, metrics
         
-    except Exception as e:
-        logger.error(f"❌ Excel -> Word dönüşüm hatası: {e}")
-        traceback.print_exc()
-        metrics.warnings.append(str(e))
+    except ImportError as e:
+        error_msg = f"Gerekli kütüphane bulunamadı: {e}"
+        logger.error(f"❌ {error_msg}")
+        metrics.warnings.append(error_msg)
         return False, "", metrics
 
 
+@timer
+@handle_exceptions
 def excel_to_pptx(input_path: str, output_path: str,
                  quality: ConversionQuality = ConversionQuality.PROFESSIONAL) -> Tuple[bool, str, ConversionMetrics]:
     """
@@ -1692,103 +1550,70 @@ def excel_to_pptx(input_path: str, output_path: str,
         
         prs = Presentation()
         
-        rows, cols = df.shape
-        rows_per_slide = 15
+        quality_settings = {
+            ConversionQuality.DRAFT: {'title': 44, 'heading': 28, 'content': 11, 'per_slide': 20},
+            ConversionQuality.STANDARD: {'title': 48, 'heading': 30, 'content': 12, 'per_slide': 15},
+            ConversionQuality.PROFESSIONAL: {'title': 48, 'heading': 32, 'content': 12, 'per_slide': 15},
+            ConversionQuality.PREMIUM: {'title': 54, 'heading': 36, 'content': 14, 'per_slide': 12},
+        }
+        settings = quality_settings.get(quality, quality_settings[ConversionQuality.PROFESSIONAL])
         
-        title_font_size = 48
-        subtitle_font_size = 20
-        heading_font_size = 32
-        content_font_size = 12
-        header_font_size = 13
-        
-        if quality == ConversionQuality.PREMIUM:
-            title_font_size = 54
-            subtitle_font_size = 24
-            heading_font_size = 36
-            content_font_size = 14
-            header_font_size = 15
-            rows_per_slide = 12
-        
-        # Ana başlık slaytı
-        title_slide_layout = prs.slide_layouts[0]
-        slide = prs.slides.add_slide(title_slide_layout)
+        # Ana başlık
+        slide = prs.slides.add_slide(prs.slide_layouts[0])
         title = slide.shapes.title
-        subtitle = slide.placeholders[1]
-        
         if title:
             title.text = "EXCEL VERİLERİ"
-            title.text_frame.paragraphs[0].font.size = Pt(title_font_size)
-            title.text_frame.paragraphs[0].font.color.rgb = RGBColor(0, 51, 102)
-            title.text_frame.paragraphs[0].font.bold = True
+            title.text_frame.paragraphs[0].font.size = Pt(settings['title'])
         
+        subtitle = slide.placeholders[1]
         if subtitle:
-            subtitle.text = f"Toplam {rows} satır, {cols} sütun\n{os.path.basename(input_path)}"
-            subtitle.text_frame.paragraphs[0].font.size = Pt(subtitle_font_size)
+            subtitle.text = f"Toplam {len(df)} satır, {len(df.columns)} sütun"
         
-        changes.append("Ana başlık slaytı oluşturuldu")
+        rows_per_slide = settings['per_slide']
         
-        # Veri slaytları
-        for slide_start in range(0, rows, rows_per_slide):
-            slide_end = min(slide_start + rows_per_slide, rows)
+        for start in range(0, len(df), rows_per_slide):
+            end = min(start + rows_per_slide, len(df))
             
-            blank_slide_layout = prs.slide_layouts[6]
-            slide = prs.slides.add_slide(blank_slide_layout)
+            slide = prs.slides.add_slide(prs.slide_layouts[6])
             
-            title_box = slide.shapes.add_textbox(
-                int(Inches(0.5).emu), 
-                int(Inches(0.2).emu), 
-                int(Inches(9).emu), 
-                int(Inches(0.8).emu)
-            )
+            # Başlık
+            title_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.2), Inches(9), Inches(0.8))
             title_frame = title_box.text_frame
-            title_frame.text = f"Excel Verileri - Sayfa {slide_start//rows_per_slide + 1}"
-            title_frame.paragraphs[0].font.size = Pt(heading_font_size)
+            title_frame.text = f"Excel Verileri - Sayfa {start//rows_per_slide + 1}"
+            title_frame.paragraphs[0].font.size = Pt(settings['heading'])
             title_frame.paragraphs[0].font.bold = True
             title_frame.paragraphs[0].font.color.rgb = RGBColor(0, 51, 102)
             
-            table_data = [df.columns.tolist()] + df.iloc[slide_start:slide_end].values.tolist()
+            # Tablo
+            data = [df.columns.tolist()] + df.iloc[start:end].values.tolist()
+            rows, cols = len(data), len(data[0])
             
-            rows_in_slide = len(table_data)
-            cols_in_slide = len(table_data[0])
+            left = Inches(0.5)
+            top = Inches(1.5)
+            width = Inches(9)
+            height = Inches(5)
             
-            left = int(Inches(0.5).emu)
-            top = int(Inches(1.5).emu)
-            width = int(Inches(9).emu)
-            height = int(Inches(5.5).emu)
+            table = slide.shapes.add_table(rows, cols, left, top, width, height).table
             
-            table = slide.shapes.add_table(rows_in_slide, cols_in_slide, left, top, width, height).table
-            
-            col_width = int(width / cols_in_slide)
-            for col in range(cols_in_slide):
-                table.columns[col].width = col_width
-            
-            for row in range(rows_in_slide):
-                for col in range(cols_in_slide):
-                    cell = table.cell(row, col)
-                    cell.text = str(table_data[row][col])
+            for i in range(rows):
+                for j in range(cols):
+                    cell = table.cell(i, j)
+                    cell.text = str(data[i][j])
                     
                     for paragraph in cell.text_frame.paragraphs:
-                        paragraph.font.size = Pt(content_font_size)
+                        paragraph.font.size = Pt(settings['content'])
                         paragraph.alignment = PP_ALIGN.CENTER
                     
-                    if row == 0:
+                    if i == 0:  # Başlık satırı
                         cell.fill.solid()
                         cell.fill.fore_color.rgb = RGBColor(46, 117, 182)
                         for paragraph in cell.text_frame.paragraphs:
                             paragraph.font.color.rgb = RGBColor(255, 255, 255)
                             paragraph.font.bold = True
-                            paragraph.font.size = Pt(header_font_size)
-                    else:
-                        if row % 2 == 1:
-                            cell.fill.solid()
-                            cell.fill.fore_color.rgb = RGBColor(242, 242, 242)
-            
-            changes.append(f"Veri slaytı oluşturuldu: Sayfa {slide_start//rows_per_slide + 1}")
         
         prs.save(output_path)
         
         metrics.output_size = os.path.getsize(output_path)
-        metrics.processing_time = 0
         metrics.compression_ratio = metrics.output_size / metrics.input_size if metrics.input_size > 0 else 1
         metrics.quality_score = 85
         metrics.complexity = DocumentComplexity.MODERATE
@@ -1796,17 +1621,19 @@ def excel_to_pptx(input_path: str, output_path: str,
         logger.info(f"✅ Excel -> PowerPoint dönüşüm başarılı: {input_path}")
         return True, output_path, metrics
         
-    except Exception as e:
-        logger.error(f"❌ Excel -> PowerPoint dönüşüm hatası: {e}")
-        traceback.print_exc()
-        metrics.warnings.append(str(e))
+    except ImportError as e:
+        error_msg = f"Gerekli kütüphane bulunamadı: {e}"
+        logger.error(f"❌ {error_msg}")
+        metrics.warnings.append(error_msg)
         return False, "", metrics
 
 
+@timer
+@handle_exceptions
 def excel_to_text(input_path: str, output_path: str,
                  quality: ConversionQuality = ConversionQuality.PROFESSIONAL) -> Tuple[bool, str, ConversionMetrics]:
     """
-    Excel -> Metin dönüşümü (YENİ)
+    Excel -> Metin dönüşümü
     """
     metrics = ConversionMetrics()
     metrics.input_size = os.path.getsize(input_path)
@@ -1819,7 +1646,6 @@ def excel_to_text(input_path: str, output_path: str,
         df = df.fillna('')
         
         text_lines = []
-        
         text_lines.append(" | ".join([str(col) for col in df.columns]))
         text_lines.append("-" * 50)
         
@@ -1832,7 +1658,6 @@ def excel_to_text(input_path: str, output_path: str,
             f.write(text)
         
         metrics.output_size = os.path.getsize(output_path)
-        metrics.processing_time = 0
         metrics.compression_ratio = metrics.output_size / metrics.input_size if metrics.input_size > 0 else 1
         metrics.quality_score = 90
         metrics.complexity = DocumentComplexity.SIMPLE
@@ -1842,13 +1667,14 @@ def excel_to_text(input_path: str, output_path: str,
         
     except Exception as e:
         logger.error(f"❌ Excel -> Metin dönüşüm hatası: {e}")
-        traceback.print_exc()
         metrics.warnings.append(str(e))
         return False, "", metrics
 
 
 # ========== POWERPOINT DÖNÜŞÜMLERİ ==========
 
+@timer
+@handle_exceptions
 def pptx_to_pdf(input_path: str, output_path: str,
                quality: ConversionQuality = ConversionQuality.PROFESSIONAL) -> Tuple[bool, str, ConversionMetrics]:
     """
@@ -1877,6 +1703,7 @@ def pptx_to_pdf(input_path: str, output_path: str,
         total_slides = len(prs.slides)
         
         for slide_num, slide in enumerate(prs.slides, 1):
+            # Slayt başlığı
             c.setFont("Helvetica-Bold", 18)
             c.setFillColor(colors.HexColor('#2E75B6'))
             c.drawString(left_margin, y, f"Slayt {slide_num}/{total_slides}")
@@ -1885,46 +1712,22 @@ def pptx_to_pdf(input_path: str, output_path: str,
             c.setFont("Helvetica", 11)
             c.setFillColor(colors.black)
             
-            shapes_with_text = 0
+            # İçerik
             for shape in slide.shapes:
                 if hasattr(shape, "text") and shape.text.strip():
-                    shapes_with_text += 1
-                    
                     text = shape.text.strip()
                     
-                    if len(text) < 50 and not '\n' in text and not text.startswith('•'):
-                        c.setFont("Helvetica-Bold", 14)
-                        c.setFillColor(colors.HexColor('#1E4E7C'))
-                    else:
-                        c.setFont("Helvetica", 11)
-                        c.setFillColor(colors.black)
-                    
-                    text_lines = text.split('\n')
-                    
-                    for line in text_lines:
+                    for line in text.split('\n'):
                         if line.strip():
                             if y < line_height + 1*cm:
                                 c.showPage()
                                 y = height - 2*cm
                                 c.setFont("Helvetica", 11)
-                                c.setFillColor(colors.black)
                             
-                            if line.startswith('•') or (len(text_lines) > 1 and not c._fontname.endswith('Bold')):
-                                c.drawString(left_margin + 0.5*cm, y, line)
-                            else:
-                                c.drawString(left_margin, y, line)
-                            
+                            c.drawString(left_margin + 0.5*cm, y, line)
                             y -= line_height
                     
                     y -= line_height * 0.5
-            
-            if shapes_with_text == 0:
-                c.setFont("Helvetica-Oblique", 11)
-                c.setFillColor(colors.HexColor('#666666'))
-                c.drawString(left_margin + 0.5*cm, y, "(Bu slaytta metin yok)")
-                y -= line_height
-            
-            changes.append(f"Slayt {slide_num} işlendi")
             
             if slide_num < total_slides:
                 c.showPage()
@@ -1933,7 +1736,6 @@ def pptx_to_pdf(input_path: str, output_path: str,
         c.save()
         
         metrics.output_size = os.path.getsize(output_path)
-        metrics.processing_time = 0
         metrics.compression_ratio = metrics.output_size / metrics.input_size if metrics.input_size > 0 else 1
         metrics.quality_score = 90
         metrics.complexity = DocumentComplexity.MODERATE if total_slides > 10 else DocumentComplexity.SIMPLE
@@ -1941,13 +1743,15 @@ def pptx_to_pdf(input_path: str, output_path: str,
         logger.info(f"✅ PowerPoint -> PDF dönüşüm başarılı: {input_path}")
         return True, output_path, metrics
         
-    except Exception as e:
-        logger.error(f"❌ PowerPoint -> PDF dönüşüm hatası: {e}")
-        traceback.print_exc()
-        metrics.warnings.append(str(e))
+    except ImportError as e:
+        error_msg = f"Gerekli kütüphane bulunamadı: {e}"
+        logger.error(f"❌ {error_msg}")
+        metrics.warnings.append(error_msg)
         return False, "", metrics
 
 
+@timer
+@handle_exceptions
 def pptx_to_word(input_path: str, output_path: str,
                 quality: ConversionQuality = ConversionQuality.PROFESSIONAL) -> Tuple[bool, str, ConversionMetrics]:
     """
@@ -1961,62 +1765,39 @@ def pptx_to_word(input_path: str, output_path: str,
         from pptx import Presentation
         from docx import Document
         from docx.shared import Inches, Pt
-        from docx.enum.text import WD_ALIGN_PARAGRAPH
         
         prs = Presentation(input_path)
         doc = Document()
         
         total_slides = len(prs.slides)
         
-        style = doc.styles['Normal']
-        style.font.name = 'Calibri'
-        style.font.size = Pt(11)
-        
+        # Ana başlık
         title = doc.add_heading('POWERPOINT DÖKÜMANI DÖNÜŞÜMÜ', 0)
-        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        title.alignment = 1
         run = title.runs[0]
         run.font.size = Pt(24)
-        run.font.name = 'Calibri'
-        run.font.color.rgb = (0, 51, 102)
+        run.font.bold = True
         
-        doc.add_paragraph(f"Kaynak dosya: {os.path.basename(input_path)}")
+        doc.add_paragraph(f"Kaynak: {os.path.basename(input_path)}")
         doc.add_paragraph(f"Toplam {total_slides} slayt")
-        doc.add_paragraph(f"Dönüşüm tarihi: {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}")
         doc.add_paragraph()
         
-        changes.append("Ana başlık oluşturuldu")
-        
         for slide_num, slide in enumerate(prs.slides, 1):
-            heading = doc.add_heading(f'Slayt {slide_num}/{total_slides}', level=1)
-            for run in heading.runs:
-                run.font.color.rgb = (0, 102, 204)
+            doc.add_heading(f'Slayt {slide_num}/{total_slides}', level=1)
             
-            shapes_with_text = 0
             for shape in slide.shapes:
                 if hasattr(shape, "text") and shape.text.strip():
-                    shapes_with_text += 1
-                    
                     text = shape.text.strip()
                     
-                    if len(text) < 50 and not '\n' in text and not text.startswith('•'):
+                    if len(text) < 50 and not '\n' in text:
                         doc.add_heading(text, level=2)
                     else:
-                        paragraphs = text.split('\n')
-                        for para in paragraphs:
+                        for para in text.split('\n'):
                             if para.strip():
                                 p = doc.add_paragraph()
                                 run = p.add_run(para.strip())
                                 run.font.size = Pt(11)
                                 p.paragraph_format.left_indent = Inches(0.3)
-                                p.paragraph_format.space_after = Pt(3)
-                                
-                                if para.startswith('•'):
-                                    p.style = 'List Bullet'
-            
-            if shapes_with_text == 0:
-                doc.add_paragraph("(Bu slaytta metin yok)")
-            
-            changes.append(f"Slayt {slide_num} işlendi ({shapes_with_text} şekil)")
             
             if slide_num < total_slides:
                 doc.add_page_break()
@@ -2024,7 +1805,6 @@ def pptx_to_word(input_path: str, output_path: str,
         doc.save(output_path)
         
         metrics.output_size = os.path.getsize(output_path)
-        metrics.processing_time = 0
         metrics.compression_ratio = metrics.output_size / metrics.input_size if metrics.input_size > 0 else 1
         metrics.quality_score = 85
         metrics.complexity = DocumentComplexity.MODERATE if total_slides > 10 else DocumentComplexity.SIMPLE
@@ -2032,17 +1812,19 @@ def pptx_to_word(input_path: str, output_path: str,
         logger.info(f"✅ PowerPoint -> Word dönüşüm başarılı: {input_path}")
         return True, output_path, metrics
         
-    except Exception as e:
-        logger.error(f"❌ PowerPoint -> Word dönüşüm hatası: {e}")
-        traceback.print_exc()
-        metrics.warnings.append(str(e))
+    except ImportError as e:
+        error_msg = f"Gerekli kütüphane bulunamadı: {e}"
+        logger.error(f"❌ {error_msg}")
+        metrics.warnings.append(error_msg)
         return False, "", metrics
 
 
+@timer
+@handle_exceptions
 def pptx_to_text(input_path: str, output_path: str,
                 quality: ConversionQuality = ConversionQuality.PROFESSIONAL) -> Tuple[bool, str, ConversionMetrics]:
     """
-    PowerPoint -> Metin dönüşümü (YENİ)
+    PowerPoint -> Metin dönüşümü
     """
     metrics = ConversionMetrics()
     metrics.input_size = os.path.getsize(input_path)
@@ -2071,7 +1853,6 @@ def pptx_to_text(input_path: str, output_path: str,
             f.write(text)
         
         metrics.output_size = os.path.getsize(output_path)
-        metrics.processing_time = 0
         metrics.compression_ratio = metrics.output_size / metrics.input_size if metrics.input_size > 0 else 1
         metrics.quality_score = 90
         metrics.complexity = DocumentComplexity.SIMPLE
@@ -2081,13 +1862,14 @@ def pptx_to_text(input_path: str, output_path: str,
         
     except Exception as e:
         logger.error(f"❌ PowerPoint -> Metin dönüşüm hatası: {e}")
-        traceback.print_exc()
         metrics.warnings.append(str(e))
         return False, "", metrics
 
 
 # ========== PDF DÖNÜŞÜMLERİ ==========
 
+@timer
+@handle_exceptions
 def pdf_to_word(input_path: str, output_path: str,
                quality: ConversionQuality = ConversionQuality.PROFESSIONAL) -> Tuple[bool, str, ConversionMetrics]:
     """
@@ -2100,61 +1882,35 @@ def pdf_to_word(input_path: str, output_path: str,
     try:
         import PyPDF2
         from docx import Document
-        from docx.shared import Inches, Pt
-        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.shared import Pt
         
         doc = Document()
-        
-        style = doc.styles['Normal']
-        style.font.name = 'Times New Roman'
-        style.font.size = Pt(12)
         
         with open(input_path, 'rb') as file:
             pdf_reader = PyPDF2.PdfReader(file)
             total_pages = len(pdf_reader.pages)
             
             title = doc.add_heading('PDF DÖKÜMANI DÖNÜŞÜMÜ', 0)
-            title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            title.alignment = 1
             run = title.runs[0]
             run.font.size = Pt(24)
-            run.font.name = 'Arial'
-            run.font.color.rgb = (0, 51, 102)
             
-            doc.add_paragraph(f"Kaynak dosya: {os.path.basename(input_path)}")
+            doc.add_paragraph(f"Kaynak: {os.path.basename(input_path)}")
             doc.add_paragraph(f"Toplam {total_pages} sayfa")
-            doc.add_paragraph(f"Dönüşüm tarihi: {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}")
             doc.add_paragraph()
-            
-            changes.append("Ana başlık oluşturuldu")
             
             for page_num in range(total_pages):
                 page = pdf_reader.pages[page_num]
                 text = page.extract_text()
                 
-                heading = doc.add_heading(f'Sayfa {page_num + 1}/{total_pages}', level=1)
-                for run in heading.runs:
-                    run.font.color.rgb = (0, 102, 204)
+                doc.add_heading(f'Sayfa {page_num + 1}/{total_pages}', level=1)
                 
                 if text and text.strip():
-                    lines = text.split('\n')
-                    current_paragraph = []
-                    
-                    for line in lines:
-                        clean_line = ' '.join(line.split())
-                        if clean_line:
-                            current_paragraph.append(clean_line)
-                        else:
-                            if current_paragraph:
-                                doc.add_paragraph(' '.join(current_paragraph))
-                                current_paragraph = []
-                    
-                    if current_paragraph:
-                        doc.add_paragraph(' '.join(current_paragraph))
-                    
-                    changes.append(f"Sayfa {page_num + 1} işlendi ({len(lines)} satır)")
+                    for para in text.split('\n'):
+                        if para.strip():
+                            doc.add_paragraph(para.strip())
                 else:
                     doc.add_paragraph("(Bu sayfada metin bulunamadı)")
-                    changes.append(f"Sayfa {page_num + 1} boş")
                 
                 if page_num < total_pages - 1:
                     doc.add_page_break()
@@ -2162,7 +1918,6 @@ def pdf_to_word(input_path: str, output_path: str,
         doc.save(output_path)
         
         metrics.output_size = os.path.getsize(output_path)
-        metrics.processing_time = 0
         metrics.compression_ratio = metrics.output_size / metrics.input_size if metrics.input_size > 0 else 1
         metrics.quality_score = 80
         metrics.complexity = DocumentComplexity.MODERATE if total_pages > 20 else DocumentComplexity.SIMPLE
@@ -2170,17 +1925,19 @@ def pdf_to_word(input_path: str, output_path: str,
         logger.info(f"✅ PDF -> Word dönüşüm başarılı: {input_path}")
         return True, output_path, metrics
         
-    except Exception as e:
-        logger.error(f"❌ PDF -> Word dönüşüm hatası: {e}")
-        traceback.print_exc()
-        metrics.warnings.append(str(e))
+    except ImportError as e:
+        error_msg = f"Gerekli kütüphane bulunamadı: {e}"
+        logger.error(f"❌ {error_msg}")
+        metrics.warnings.append(error_msg)
         return False, "", metrics
 
 
+@timer
+@handle_exceptions
 def pdf_to_text(input_path: str, output_path: str,
                quality: ConversionQuality = ConversionQuality.PROFESSIONAL) -> Tuple[bool, str, ConversionMetrics]:
     """
-    PDF -> Metin dönüşümü (YENİ)
+    PDF -> Metin dönüşümü
     """
     metrics = ConversionMetrics()
     metrics.input_size = os.path.getsize(input_path)
@@ -2210,7 +1967,6 @@ def pdf_to_text(input_path: str, output_path: str,
             f.write(text)
         
         metrics.output_size = os.path.getsize(output_path)
-        metrics.processing_time = 0
         metrics.compression_ratio = metrics.output_size / metrics.input_size if metrics.input_size > 0 else 1
         metrics.quality_score = 85
         metrics.complexity = DocumentComplexity.SIMPLE
@@ -2220,13 +1976,14 @@ def pdf_to_text(input_path: str, output_path: str,
         
     except Exception as e:
         logger.error(f"❌ PDF -> Metin dönüşüm hatası: {e}")
-        traceback.print_exc()
         metrics.warnings.append(str(e))
         return False, "", metrics
 
 
 # ========== GÖRSEL DÖNÜŞÜMLERİ ==========
 
+@timer
+@handle_exceptions
 def image_to_pdf(input_path: str, output_path: str,
                 quality: ConversionQuality = ConversionQuality.PROFESSIONAL) -> Tuple[bool, str, ConversionMetrics]:
     """
@@ -2242,55 +1999,121 @@ def image_to_pdf(input_path: str, output_path: str,
         
         image = Image.open(input_path)
         
-        changes.append(f"Orijinal görsel: {image.width}x{image.height}, {image.mode}")
+        # Kalite ayarları
+        quality_settings = {
+            ConversionQuality.DRAFT: {'dpi': 150, 'quality': 80, 'sharpen': False},
+            ConversionQuality.STANDARD: {'dpi': 200, 'quality': 85, 'sharpen': False},
+            ConversionQuality.PROFESSIONAL: {'dpi': 300, 'quality': 95, 'sharpen': True},
+            ConversionQuality.PREMIUM: {'dpi': 600, 'quality': 100, 'sharpen': True},
+        }
+        settings = quality_settings.get(quality, quality_settings[ConversionQuality.PROFESSIONAL])
         
+        # RGB'ye çevir
         if image.mode != 'RGB':
             image = image.convert('RGB')
-            changes.append("RGB'ye dönüştürüldü")
         
-        dpi = 300
-        quality_value = 95
-        if quality == ConversionQuality.PREMIUM:
-            dpi = 600
-            quality_value = 100
-        elif quality == ConversionQuality.DRAFT:
-            dpi = 150
-            quality_value = 80
-        
-        a4_width, a4_height = int(8.27 * dpi), int(11.69 * dpi)
+        # A4'e sığdır
+        a4_width, a4_height = int(8.27 * settings['dpi']), int(11.69 * settings['dpi'])
         image.thumbnail((a4_width, a4_height), Image.Resampling.LANCZOS)
-        changes.append(f"A4 boyutuna ölçeklendi ({image.width}x{image.height})")
         
-        if quality != ConversionQuality.DRAFT:
+        if settings['sharpen']:
             image = image.filter(ImageFilter.SHARPEN)
-            changes.append("Keskinleştirme uygulandı")
         
-        temp_image_path = input_path + "_temp.jpg"
-        image.save(temp_image_path, 'JPEG', quality=quality_value, optimize=True, dpi=(dpi, dpi))
-        changes.append(f"JPEG olarak kaydedildi (kalite: {quality_value})")
+        # Geçici dosya
+        temp_path = input_path + f"_temp_{int(time.time())}.jpg"
+        image.save(temp_path, 'JPEG', quality=settings['quality'], optimize=True, dpi=(settings['dpi'], settings['dpi']))
         
-        pdf_bytes = img2pdf.convert(temp_image_path)
-        
+        # PDF'e çevir
         with open(output_path, "wb") as f:
-            f.write(pdf_bytes)
+            f.write(img2pdf.convert(temp_path))
         
-        os.remove(temp_image_path)
+        os.remove(temp_path)
         
         metrics.output_size = os.path.getsize(output_path)
-        metrics.processing_time = 0
         metrics.compression_ratio = metrics.output_size / metrics.input_size if metrics.input_size > 0 else 1
         metrics.quality_score = 95 if quality == ConversionQuality.PREMIUM else 85
         
         logger.info(f"✅ Görsel -> PDF dönüşüm başarılı: {input_path}")
         return True, output_path, metrics
         
+    except ImportError as e:
+        error_msg = f"Gerekli kütüphane bulunamadı: {e}"
+        logger.error(f"❌ {error_msg}")
+        metrics.warnings.append(error_msg)
+        return False, "", metrics
+
+
+def _create_fallback_word_document(input_path: str, output_path: str, 
+                                   metrics: ConversionMetrics, changes: List[str]) -> Tuple[bool, str, ConversionMetrics]:
+    """OCR başarısız olduğunda basit bir Word belgesi oluştur"""
+    try:
+        from docx import Document
+        from docx.shared import Inches, Pt, RGBColor
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        
+        doc = Document()
+        
+        title = doc.add_heading('GÖRSEL DOSYASI', 0)
+        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = title.runs[0]
+        run.font.size = Pt(26)
+        run.font.bold = True
+        run.font.color.rgb = RGBColor(0, 51, 102)
+        
+        doc.add_paragraph()
+        info = doc.add_paragraph()
+        info.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = info.add_run("⚠️ OCR SİSTEMİ DEVRE DIŞI")
+        run.font.size = Pt(16)
+        run.font.bold = True
+        run.font.color.rgb = RGBColor(255, 0, 0)
+        
+        doc.add_paragraph()
+        
+        # Dosya bilgileri
+        p = doc.add_paragraph()
+        p.add_run("📁 ").bold = True
+        p.add_run(f"Dosya: {os.path.basename(input_path)}")
+        
+        p = doc.add_paragraph()
+        p.add_run("📅 ").bold = True
+        p.add_run(f"Tarih: {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}")
+        
+        p = doc.add_paragraph()
+        p.add_run("📏 ").bold = True
+        from PIL import Image
+        img = Image.open(input_path)
+        p.add_run(f"Boyut: {img.width} x {img.height} piksel")
+        
+        doc.add_paragraph()
+        doc.add_paragraph("Bu bir görsel dosyasıdır. OCR sistemi şu anda kullanılamıyor.")
+        doc.add_paragraph("Metin çıkarmak için lütfen daha sonra tekrar deneyin.")
+        
+        doc.add_paragraph()
+        doc.add_paragraph("📞 Destek: @yusozone")
+        
+        doc.add_page_break()
+        doc.add_heading('ORİJİNAL GÖRSEL', level=1)
+        doc.add_paragraph()
+        doc.add_picture(input_path, width=Inches(5))
+        
+        doc.save(output_path)
+        
+        metrics.output_size = os.path.getsize(output_path)
+        metrics.quality_score = 30
+        metrics.warnings.append("OCR sistemi bulunamadı, görsel bilgileri kaydedildi")
+        
+        logger.info(f"✅ Yedek Word belgesi oluşturuldu: {input_path}")
+        return True, output_path, metrics
+        
     except Exception as e:
-        logger.error(f"❌ Görsel -> PDF dönüşüm hatası: {e}")
-        traceback.print_exc()
+        logger.error(f"❌ Yedek belge oluşturulamadı: {e}")
         metrics.warnings.append(str(e))
         return False, "", metrics
 
 
+@timer
+@handle_exceptions
 def image_to_word(input_path: str, output_path: str,
                  quality: ConversionQuality = ConversionQuality.PROFESSIONAL) -> Tuple[bool, str, ConversionMetrics]:
     """
@@ -2299,6 +2122,11 @@ def image_to_word(input_path: str, output_path: str,
     metrics = ConversionMetrics()
     metrics.input_size = os.path.getsize(input_path)
     changes = []
+    
+    # Tesseract kontrolü
+    if not TESSERACT_AVAILABLE or not TESSERACT_CONFIGURED:
+        logger.warning("⚠️ Tesseract OCR bulunamadı, yedek belge oluşturuluyor")
+        return _create_fallback_word_document(input_path, output_path, metrics, changes)
     
     try:
         from PIL import Image, ImageEnhance, ImageFilter
@@ -2309,176 +2137,111 @@ def image_to_word(input_path: str, output_path: str,
         
         image = Image.open(input_path)
         
-        original_format = image.format
         original_size = image.size
+        changes.append(f"Orijinal görsel: {original_size[0]}x{original_size[1]}")
         
-        changes.append(f"Orijinal görsel: {original_size[0]}x{original_size[1]}, {original_format}")
+        # Kalite ayarları
+        quality_settings = {
+            ConversionQuality.DRAFT: {'scale': 1.5, 'contrast': 2.0, 'psm': 6},
+            ConversionQuality.STANDARD: {'scale': 2.0, 'contrast': 2.5, 'psm': 6},
+            ConversionQuality.PROFESSIONAL: {'scale': 2.0, 'contrast': 2.5, 'psm': 6},
+            ConversionQuality.PREMIUM: {'scale': 3.0, 'contrast': 3.0, 'psm': 3},
+        }
+        settings = quality_settings.get(quality, quality_settings[ConversionQuality.PROFESSIONAL])
         
-        scale_factor = 2
-        contrast_factor = 2.5
-        psm_mode = 6
-        
-        if quality == ConversionQuality.PREMIUM:
-            scale_factor = 3
-            contrast_factor = 3.0
-            psm_mode = 3
-        elif quality == ConversionQuality.DRAFT:
-            scale_factor = 1.5
-            contrast_factor = 2.0
-            psm_mode = 6
-        
-        width, height = image.size
-        if width < 2000:
-            new_size = (width * scale_factor, height * scale_factor)
+        # Görseli büyüt
+        if image.width < 2000:
+            new_size = (int(image.width * settings['scale']), int(image.height * settings['scale']))
             image = image.resize(new_size, Image.Resampling.LANCZOS)
-            changes.append(f"Görsel büyütüldü: {width}x{height} -> {new_size[0]}x{new_size[1]}")
+            changes.append(f"Görsel büyütüldü: {new_size[0]}x{new_size[1]}")
         
+        # Gri tonlama
         image = image.convert('L')
-        changes.append("Gri tonlamaya çevrildi")
         
+        # Kontrast artır
         enhancer = ImageEnhance.Contrast(image)
-        image = enhancer.enhance(contrast_factor)
-        changes.append(f"Kontrast %{contrast_factor*100:.0f} artırıldı")
+        image = enhancer.enhance(settings['contrast'])
         
+        # Gürültü azalt
         image = image.filter(ImageFilter.MedianFilter(size=3))
         image = image.filter(ImageFilter.SHARPEN)
-        changes.append("Gürültü azaltıldı, keskinleştirildi")
         
-        if quality != ConversionQuality.DRAFT:
+        if quality == ConversionQuality.PREMIUM:
             image = image.filter(ImageFilter.EDGE_ENHANCE)
-            changes.append("Kenar iyileştirmesi uygulandı")
         
-        temp_image_path = input_path + "_temp_ocr.png"
-        image.save(temp_image_path, 'PNG', dpi=(300,300))
+        # Geçici kaydet
+        temp_path = input_path + f"_temp_ocr_{int(time.time())}.png"
+        image.save(temp_path, 'PNG', dpi=(300,300))
         
-        sample_text = pytesseract.image_to_string(temp_image_path, lang='tur', config='--psm 6')
-        if not sample_text.strip():
-            sample_text = pytesseract.image_to_string(temp_image_path, lang='eng', config='--psm 6')
-            language = 'eng'
-            changes.append("İngilizce dilinde OCR yapılacak")
-        else:
-            language = 'tur'
-            changes.append("Türkçe dilinde OCR yapılacak")
+        # Dil tespiti
+        sample = pytesseract.image_to_string(temp_path, lang='tur', config='--psm 6')
+        language = 'tur' if sample.strip() else 'eng'
         
-        ocr_text = ""
-        ocr_configs = [
-            f'--oem 3 --psm {psm_mode} -l {language}+eng',
-            f'--oem 3 --psm 3 -l {language}+eng',
-            f'--oem 3 --psm 4 -l {language}+eng',
-            f'--oem 3 --psm 11 -l {language}+eng',
-        ]
-        
-        for config in ocr_configs:
-            try:
-                result = pytesseract.image_to_string(temp_image_path, config=config)
-                if result.strip() and len(result) > len(ocr_text):
-                    ocr_text = result
-            except:
-                continue
-        
-        text = ocr_text
+        # OCR
+        config = f'--oem 3 --psm {settings["psm"]} -l {language}+eng'
+        text = pytesseract.image_to_string(temp_path, config=config)
         
         if text.strip():
             text = fix_common_ocr_errors(text)
-            cleaned_text, removed_lines = clean_ocr_text(text)
+            cleaned, removed = clean_ocr_text(text)
+            cleaned = merge_intelligent_lines(cleaned)
+            cleaned = normalize_whitespace(cleaned)
             
-            cleaned_text = re.sub(r'\s+', ' ', cleaned_text)
-            cleaned_text = re.sub(r'\n\s*\n\s*\n', '\n\n', cleaned_text)
+            changes.append(f"OCR başarılı ({len(text)} karakter, {len(removed)} gereksiz satır temizlendi)")
             
-            cleaned_text = merge_intelligent_lines(cleaned_text)
-            cleaned_text = normalize_whitespace(cleaned_text)
-            
-            changes.append(f"OCR başarılı ({len(text)} karakter, {len(removed_lines)} gereksiz satır temizlendi)")
-            
-            confidence = calculate_ocr_confidence(cleaned_text)
+            confidence = calculate_ocr_confidence(cleaned)
             changes.append(f"OCR güven skoru: %{confidence:.0f}")
         else:
             changes.append("OCR başarısız, görselde metin olmayabilir")
-            cleaned_text = text
+            cleaned = ""
         
+        # Word belgesi
         doc = Document()
         
         section = doc.sections[0]
         section.left_margin = Inches(1)
         section.right_margin = Inches(1)
-        section.top_margin = Inches(1)
-        section.bottom_margin = Inches(1)
-        
-        style = doc.styles['Normal']
-        style.font.name = 'Calibri'
-        style.font.size = Pt(11)
         
         title = doc.add_heading('📄 GÖRSELDEN OCR İLE DÖNÜŞTÜRÜLEN METİN', 0)
         title.alignment = WD_ALIGN_PARAGRAPH.CENTER
         run = title.runs[0]
         run.font.size = Pt(26)
         run.font.bold = True
-        run.font.name = 'Calibri'
         run.font.color.rgb = RGBColor(0, 51, 102)
         
-        doc.add_paragraph()
-        info_para = doc.add_paragraph()
-        info_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = info_para.add_run(f"🖼️ Kaynak: {os.path.basename(input_path)}")
-        run.font.size = Pt(12)
-        run.font.color.rgb = RGBColor(100, 100, 100)
-        
-        info_para2 = doc.add_paragraph()
-        info_para2.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = info_para2.add_run(f"📅 Dönüşüm: {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}")
-        run.font.size = Pt(12)
-        run.font.color.rgb = RGBColor(100, 100, 100)
-        
-        info_para3 = doc.add_paragraph()
-        info_para3.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = info_para3.add_run(f"🔍 OCR Dili: {language.upper()}, Kalite: {quality.value}")
+        info = doc.add_paragraph()
+        info.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = info.add_run(f"🖼️ Kaynak: {os.path.basename(input_path)}")
         run.font.size = Pt(12)
         run.font.color.rgb = RGBColor(100, 100, 100)
         
         doc.add_paragraph('_' * 80)
         doc.add_paragraph()
         
-        if cleaned_text.strip():
-            clean_paragraphs = cleaned_text.split('\n\n')
-            para_count = 0
-            
-            for para in clean_paragraphs:
+        if cleaned.strip():
+            for para in cleaned.split('\n\n'):
                 if para.strip():
                     p = doc.add_paragraph()
                     run = p.add_run(para.strip())
                     run.font.size = Pt(11)
-                    run.font.name = 'Calibri'
-                    
                     p.paragraph_format.space_after = Pt(12)
-                    para_count += 1
-            
-            changes.append(f"{para_count} paragraf oluşturuldu")
         else:
             p = doc.add_paragraph()
-            run = p.add_run("(Görselde metin bulunamadı veya okunamadı)")
-            run.font.size = Pt(12)
+            run = p.add_run("(Görselde metin bulunamadı)")
             run.font.italic = True
             run.font.color.rgb = RGBColor(150, 150, 150)
         
         doc.add_page_break()
-        
         doc.add_heading('🖼️ ORİJİNAL GÖRSEL', level=1)
         doc.add_paragraph()
-        
-        try:
-            doc.add_picture(input_path, width=Inches(5))
-            last_paragraph = doc.paragraphs[-1]
-            last_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            changes.append("Orijinal görsel eklendi")
-        except:
-            doc.add_paragraph("(Görsel yüklenemedi)")
-        
-        os.remove(temp_image_path)
+        doc.add_picture(input_path, width=Inches(5))
         
         doc.save(output_path)
         
+        # Temizlik
+        os.remove(temp_path)
+        
         metrics.output_size = os.path.getsize(output_path)
-        metrics.processing_time = 0
         metrics.compression_ratio = metrics.output_size / metrics.input_size if metrics.input_size > 0 else 1
         metrics.quality_score = 85 if text.strip() else 50
         
@@ -2489,17 +2252,27 @@ def image_to_word(input_path: str, output_path: str,
         logger.error(f"❌ Görsel -> Word dönüşüm hatası: {e}")
         traceback.print_exc()
         metrics.warnings.append(str(e))
-        return False, "", metrics
+        return _create_fallback_word_document(input_path, output_path, metrics, changes)
 
 
+@timer
+@handle_exceptions
 def image_to_text(input_path: str, output_path: str,
                  quality: ConversionQuality = ConversionQuality.PROFESSIONAL) -> Tuple[bool, str, ConversionMetrics]:
     """
-    Görsel -> Metin dönüşümü (OCR) (YENİ)
+    Görsel -> Metin dönüşümü (OCR)
     """
     metrics = ConversionMetrics()
     metrics.input_size = os.path.getsize(input_path)
     changes = []
+    
+    if not TESSERACT_AVAILABLE or not TESSERACT_CONFIGURED:
+        logger.warning("⚠️ Tesseract OCR bulunamadı")
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write("(OCR sistemi yapılandırılmamış)")
+        metrics.output_size = os.path.getsize(output_path)
+        metrics.quality_score = 10
+        return True, output_path, metrics
     
     try:
         from PIL import Image, ImageEnhance, ImageFilter
@@ -2507,79 +2280,46 @@ def image_to_text(input_path: str, output_path: str,
         
         image = Image.open(input_path)
         
-        scale_factor = 2
-        contrast_factor = 2.5
+        quality_settings = {
+            ConversionQuality.DRAFT: {'scale': 1.5, 'contrast': 2.0},
+            ConversionQuality.STANDARD: {'scale': 2.0, 'contrast': 2.5},
+            ConversionQuality.PROFESSIONAL: {'scale': 2.0, 'contrast': 2.5},
+            ConversionQuality.PREMIUM: {'scale': 3.0, 'contrast': 3.0},
+        }
+        settings = quality_settings.get(quality, quality_settings[ConversionQuality.PROFESSIONAL])
         
-        if quality == ConversionQuality.PREMIUM:
-            scale_factor = 3
-            contrast_factor = 3.0
-        elif quality == ConversionQuality.DRAFT:
-            scale_factor = 1.5
-            contrast_factor = 2.0
-        
-        width, height = image.size
-        if width < 2000:
-            new_size = (width * scale_factor, height * scale_factor)
+        if image.width < 2000:
+            new_size = (int(image.width * settings['scale']), int(image.height * settings['scale']))
             image = image.resize(new_size, Image.Resampling.LANCZOS)
-            changes.append(f"Görsel büyütüldü: {width}x{height} -> {new_size[0]}x{new_size[1]}")
         
         image = image.convert('L')
-        
         enhancer = ImageEnhance.Contrast(image)
-        image = enhancer.enhance(contrast_factor)
-        
-        image = image.filter(ImageFilter.MedianFilter(size=3))
+        image = enhancer.enhance(settings['contrast'])
         image = image.filter(ImageFilter.SHARPEN)
         
-        if quality != ConversionQuality.DRAFT:
-            image = image.filter(ImageFilter.EDGE_ENHANCE)
+        temp_path = input_path + f"_temp_ocr_{int(time.time())}.png"
+        image.save(temp_path, 'PNG')
         
-        temp_image_path = input_path + "_temp_ocr.png"
-        image.save(temp_image_path, 'PNG', dpi=(300,300))
-        
-        sample_text = pytesseract.image_to_string(temp_image_path, lang='tur', config='--psm 6')
-        if not sample_text.strip():
-            sample_text = pytesseract.image_to_string(temp_image_path, lang='eng', config='--psm 6')
-            language = 'eng'
-        else:
-            language = 'tur'
-        
-        ocr_configs = [
-            f'--oem 3 --psm 6 -l {language}+eng',
-            f'--oem 3 --psm 3 -l {language}+eng',
-            f'--oem 3 --psm 4 -l {language}+eng',
-        ]
-        
-        text = ""
-        for config in ocr_configs:
-            try:
-                result = pytesseract.image_to_string(temp_image_path, config=config)
-                if result.strip() and len(result) > len(text):
-                    text = result
-            except:
-                continue
+        text = pytesseract.image_to_string(temp_path, lang='tur+eng')
         
         if text.strip():
             text = fix_common_ocr_errors(text)
-            cleaned_text, removed_lines = clean_ocr_text(text)
-            cleaned_text = re.sub(r'\s+', ' ', cleaned_text)
-            cleaned_text = merge_intelligent_lines(cleaned_text)
-            cleaned_text = normalize_whitespace(cleaned_text)
+            cleaned, removed = clean_ocr_text(text)
+            cleaned = merge_intelligent_lines(cleaned)
+            cleaned = normalize_whitespace(cleaned)
             
-            changes.append(f"OCR başarılı ({len(text)} karakter, {len(removed_lines)} gereksiz satır temizlendi)")
-            confidence = calculate_ocr_confidence(cleaned_text)
+            changes.append(f"OCR başarılı ({len(text)} karakter, {len(removed)} gereksiz satır temizlendi)")
+            confidence = calculate_ocr_confidence(cleaned)
             changes.append(f"OCR güven skoru: %{confidence:.0f}")
         else:
-            changes.append("OCR başarısız, görselde metin olmayabilir")
-            cleaned_text = text
+            cleaned = "(Görselde metin bulunamadı)"
         
         with open(output_path, 'w', encoding='utf-8') as f:
-            f.write(cleaned_text if cleaned_text.strip() else "(Görselde metin bulunamadı)")
+            f.write(cleaned)
         
-        os.remove(temp_image_path)
+        os.remove(temp_path)
         
         metrics.output_size = os.path.getsize(output_path)
-        metrics.processing_time = 0
         metrics.compression_ratio = metrics.output_size / metrics.input_size if metrics.input_size > 0 else 1
         metrics.quality_score = 85 if text.strip() else 50
         
@@ -2588,17 +2328,18 @@ def image_to_text(input_path: str, output_path: str,
         
     except Exception as e:
         logger.error(f"❌ Görsel -> Metin dönüşüm hatası: {e}")
-        traceback.print_exc()
         metrics.warnings.append(str(e))
         return False, "", metrics
 
 
 # ========== METİN DÖNÜŞÜMLERİ ==========
 
+@timer
+@handle_exceptions
 def text_to_pdf(input_path: str, output_path: str,
                quality: ConversionQuality = ConversionQuality.PROFESSIONAL) -> Tuple[bool, str, ConversionMetrics]:
     """
-    Metin -> PDF dönüşümü (YENİ)
+    Metin -> PDF dönüşümü
     """
     metrics = ConversionMetrics()
     metrics.input_size = os.path.getsize(input_path)
@@ -2620,8 +2361,7 @@ def text_to_pdf(input_path: str, output_path: str,
         
         c.setFont("Helvetica", 11)
         
-        lines = text.split('\n')
-        for line in lines:
+        for line in text.split('\n'):
             if line.strip():
                 if y < line_height:
                     c.showPage()
@@ -2636,7 +2376,6 @@ def text_to_pdf(input_path: str, output_path: str,
         c.save()
         
         metrics.output_size = os.path.getsize(output_path)
-        metrics.processing_time = 0
         metrics.compression_ratio = metrics.output_size / metrics.input_size if metrics.input_size > 0 else 1
         metrics.quality_score = 90
         metrics.complexity = DocumentComplexity.SIMPLE
@@ -2644,17 +2383,19 @@ def text_to_pdf(input_path: str, output_path: str,
         logger.info(f"✅ Metin -> PDF dönüşüm başarılı: {input_path}")
         return True, output_path, metrics
         
-    except Exception as e:
-        logger.error(f"❌ Metin -> PDF dönüşüm hatası: {e}")
-        traceback.print_exc()
-        metrics.warnings.append(str(e))
+    except ImportError as e:
+        error_msg = f"Gerekli kütüphane bulunamadı: {e}"
+        logger.error(f"❌ {error_msg}")
+        metrics.warnings.append(error_msg)
         return False, "", metrics
 
 
+@timer
+@handle_exceptions
 def text_to_word(input_path: str, output_path: str,
                 quality: ConversionQuality = ConversionQuality.PROFESSIONAL) -> Tuple[bool, str, ConversionMetrics]:
     """
-    Metin -> Word dönüşümü (YENİ)
+    Metin -> Word dönüşümü
     """
     metrics = ConversionMetrics()
     metrics.input_size = os.path.getsize(input_path)
@@ -2672,15 +2413,13 @@ def text_to_word(input_path: str, output_path: str,
         doc.add_paragraph(f"Kaynak: {os.path.basename(input_path)}")
         doc.add_paragraph()
         
-        paragraphs = text.split('\n')
-        for para in paragraphs:
+        for para in text.split('\n'):
             if para.strip():
                 doc.add_paragraph(para.strip())
         
         doc.save(output_path)
         
         metrics.output_size = os.path.getsize(output_path)
-        metrics.processing_time = 0
         metrics.compression_ratio = metrics.output_size / metrics.input_size if metrics.input_size > 0 else 1
         metrics.quality_score = 90
         metrics.complexity = DocumentComplexity.SIMPLE
@@ -2690,14 +2429,43 @@ def text_to_word(input_path: str, output_path: str,
         
     except Exception as e:
         logger.error(f"❌ Metin -> Word dönüşüm hatası: {e}")
-        traceback.print_exc()
         metrics.warnings.append(str(e))
         return False, "", metrics
 
 
 # ========== ANA DÖNÜŞTÜRME FONKSİYONLARI ==========
 
-async def smart_convert_file(input_path: str, output_path: str, source_type: str, target_type: str,
+# Dönüşüm fonksiyonları sözlüğü
+CONVERSION_FUNCTIONS = {
+    (FileType.WORD, FileType.PDF): word_to_pdf,
+    (FileType.WORD, FileType.EXCEL): word_to_excel,
+    (FileType.WORD, FileType.POWERPOINT): word_to_pptx,
+    (FileType.WORD, FileType.TEXT): word_to_text,
+    
+    (FileType.EXCEL, FileType.PDF): excel_to_pdf,
+    (FileType.EXCEL, FileType.WORD): excel_to_word,
+    (FileType.EXCEL, FileType.POWERPOINT): excel_to_pptx,
+    (FileType.EXCEL, FileType.TEXT): excel_to_text,
+    
+    (FileType.POWERPOINT, FileType.PDF): pptx_to_pdf,
+    (FileType.POWERPOINT, FileType.WORD): pptx_to_word,
+    (FileType.POWERPOINT, FileType.TEXT): pptx_to_text,
+    
+    (FileType.PDF, FileType.WORD): pdf_to_word,
+    (FileType.PDF, FileType.TEXT): pdf_to_text,
+    
+    (FileType.GORSEL, FileType.PDF): image_to_pdf,
+    (FileType.GORSEL, FileType.WORD): image_to_word,
+    (FileType.GORSEL, FileType.TEXT): image_to_text,
+    
+    (FileType.TEXT, FileType.PDF): text_to_pdf,
+    (FileType.TEXT, FileType.WORD): text_to_word,
+}
+
+
+async def smart_convert_file(input_path: str, output_path: str, 
+                            source_type: Union[str, FileType], 
+                            target_type: Union[str, FileType],
                             user_id: int = None, db_instance: Any = None,
                             quality: str = "profesyonel") -> Tuple[bool, str, str, Optional[str], ConversionMetrics]:
     """
@@ -2706,17 +2474,24 @@ async def smart_convert_file(input_path: str, output_path: str, source_type: str
     import time
     start_time = time.time()
     
-    logger.info(f"🔍 Dönüşüm isteği: {source_type} -> {target_type}")
+    # String'leri FileType'a çevir
+    if isinstance(source_type, str):
+        try:
+            source_type = FileType(source_type)
+        except ValueError:
+            source_type = FileType.UNKNOWN
+    
+    if isinstance(target_type, str):
+        try:
+            target_type = FileType(target_type)
+        except ValueError:
+            target_type = FileType.UNKNOWN
+    
+    logger.info(f"🔍 Dönüşüm isteği: {source_type.value} -> {target_type.value}")
     logger.info(f"📁 Kaynak: {input_path}")
     logger.info(f"📁 Hedef: {output_path}")
     
-    quality_map = {
-        'taslak': ConversionQuality.DRAFT,
-        'standart': ConversionQuality.STANDARD,
-        'profesyonel': ConversionQuality.PROFESSIONAL,
-        'premium': ConversionQuality.PREMIUM
-    }
-    quality_level = quality_map.get(quality, ConversionQuality.PROFESSIONAL)
+    quality_level = ConversionQuality.from_string(quality)
     
     metrics = ConversionMetrics()
     changes = []
@@ -2731,55 +2506,22 @@ async def smart_convert_file(input_path: str, output_path: str, source_type: str
             return False, "", conversion_type, edit_summary, metrics
         
         if not is_conversion_supported(source_type, target_type):
-            error_msg = f"Desteklenmeyen dönüşüm: {source_type} -> {target_type}"
+            error_msg = f"Desteklenmeyen dönüşüm: {source_type.value} -> {target_type.value}"
             logger.error(f"❌ {error_msg}")
             metrics.warnings.append(error_msg)
             return False, "", conversion_type, edit_summary, metrics
-        
-        # TÜM DÖNÜŞÜM FONKSİYONLARI
-        conversion_functions = {
-            # Word dönüşümleri
-            ('WORD', 'PDF'): lambda: word_to_pdf(input_path, output_path, quality_level),
-            ('WORD', 'EXCEL'): lambda: word_to_excel(input_path, output_path, quality_level),
-            ('WORD', 'POWERPOINT'): lambda: word_to_pptx(input_path, output_path, quality_level),
-            ('WORD', 'TEXT'): lambda: word_to_text(input_path, output_path, quality_level),
-            
-            # Excel dönüşümleri
-            ('EXCEL', 'PDF'): lambda: excel_to_pdf(input_path, output_path, quality_level),
-            ('EXCEL', 'WORD'): lambda: excel_to_word(input_path, output_path, quality_level),
-            ('EXCEL', 'POWERPOINT'): lambda: excel_to_pptx(input_path, output_path, quality_level),
-            ('EXCEL', 'TEXT'): lambda: excel_to_text(input_path, output_path, quality_level),
-            
-            # PowerPoint dönüşümleri
-            ('POWERPOINT', 'PDF'): lambda: pptx_to_pdf(input_path, output_path, quality_level),
-            ('POWERPOINT', 'WORD'): lambda: pptx_to_word(input_path, output_path, quality_level),
-            ('POWERPOINT', 'TEXT'): lambda: pptx_to_text(input_path, output_path, quality_level),
-            
-            # PDF dönüşümleri
-            ('PDF', 'WORD'): lambda: pdf_to_word(input_path, output_path, quality_level),
-            ('PDF', 'TEXT'): lambda: pdf_to_text(input_path, output_path, quality_level),
-            
-            # Görsel dönüşümleri
-            ('GORSEL', 'PDF'): lambda: image_to_pdf(input_path, output_path, quality_level),
-            ('GORSEL', 'WORD'): lambda: image_to_word(input_path, output_path, quality_level),
-            ('GORSEL', 'TEXT'): lambda: image_to_text(input_path, output_path, quality_level),
-            
-            # Metin dönüşümleri
-            ('TEXT', 'PDF'): lambda: text_to_pdf(input_path, output_path, quality_level),
-            ('TEXT', 'WORD'): lambda: text_to_word(input_path, output_path, quality_level),
-        }
         
         key = (source_type, target_type)
-        if key not in conversion_functions:
-            error_msg = f"Dönüşüm fonksiyonu bulunamadı: {source_type} -> {target_type}"
+        if key not in CONVERSION_FUNCTIONS:
+            error_msg = f"Dönüşüm fonksiyonu bulunamadı: {source_type.value} -> {target_type.value}"
             logger.error(f"❌ {error_msg}")
             metrics.warnings.append(error_msg)
             return False, "", conversion_type, edit_summary, metrics
         
-        logger.info(f"🔄 Dönüşüm başlıyor: {source_type} -> {target_type}")
+        logger.info(f"🔄 Dönüşüm başlıyor: {source_type.value} -> {target_type.value}")
         
         try:
-            success, out_path, conv_metrics = conversion_functions[key]()
+            success, out_path, conv_metrics = CONVERSION_FUNCTIONS[key](input_path, output_path, quality_level)
         except Exception as e:
             logger.error(f"❌ Dönüşüm fonksiyonu hatası: {e}")
             traceback.print_exc()
@@ -2794,7 +2536,7 @@ async def smart_convert_file(input_path: str, output_path: str, source_type: str
             logger.info(f"✅ Dönüşüm başarılı: {out_path}")
             return True, out_path, conversion_type, edit_summary, metrics
         else:
-            error_msg = f"Dönüşüm başarısız: {source_type} -> {target_type}"
+            error_msg = f"Dönüşüm başarısız: {source_type.value} -> {target_type.value}"
             logger.error(f"❌ {error_msg}")
             metrics.warnings.append(error_msg)
             return False, "", conversion_type, edit_summary, metrics
@@ -2872,7 +2614,7 @@ async def smart_process_file(input_path: str, output_path: str, source_type: str
             'type': conv_type,
             'edit_summary': edit_summary
         },
-        'metrics': {
+        'metrics': metrics.to_dict() if hasattr(metrics, 'to_dict') else {
             'quality_score': metrics.quality_score,
             'processing_time': metrics.processing_time,
             'input_size': metrics.input_size,
@@ -2884,22 +2626,18 @@ async def smart_process_file(input_path: str, output_path: str, source_type: str
     return success, get_conversion_report(metrics), results
 
 
-async def smart_process_all(input_path: str, output_path: str, source_type: str, target_type: str,
-                           user_id: int = None, db_instance: Any = None) -> Tuple[bool, str, Dict]:
-    """
-    Tüm işlemler (geriye uyumluluk için)
-    """
-    return await smart_process_file(input_path, output_path, source_type, target_type, user_id, db_instance)
-
-
 # ========== TEST FONKSİYONU ==========
 if __name__ == "__main__":
     print("🔧 Profesyonel Dönüşüm Modülü Test Ediliyor...")
     print("=" * 60)
     
+    print(f"📋 Tesseract OCR: {'✅ Var' if TESSERACT_AVAILABLE and TESSERACT_CONFIGURED else '❌ Yok'}")
+    print(f"📋 PIL: {'✅ Var' if PIL_AVAILABLE else '❌ Yok'}")
+    
     print("\n📋 DESTEKLENEN DÖNÜŞÜMLER:")
-    for source, targets in SUPPORTED_TARGET_FORMATS.items():
-        print(f"  • {source} -> {', '.join(targets)}")
+    for source, targets in SUPPORTED_CONVERSIONS.items():
+        target_names = [get_display_name(t) for t in targets]
+        print(f"  • {get_display_name(source)} -> {', '.join(target_names)}")
     
     print("\n" + "=" * 60)
     print("✅ Modül hazır! Tüm dönüşümler destekleniyor.")
