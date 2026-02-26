@@ -301,14 +301,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     username = update.effective_user.username or "isimsiz"
     
-    # Çalışma saatleri kontrolü
-    if not await check_business_hours():
-        message = await get_business_hours_message()
-        keyboard = [[InlineKeyboardButton("👋 Ana Menü", callback_data="merhaba")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(message, reply_markup=reply_markup, parse_mode='Markdown')
-        return
-    
+
     # Hak kontrolü - doğrudan veritabanından
     remaining = get_user_rights_direct(user_id)
     logger.info(f"📥 Dosya yükleme: {username} - Kalan hak: {remaining}")
@@ -1582,3 +1575,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+
