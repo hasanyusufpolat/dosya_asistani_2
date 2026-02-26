@@ -14,10 +14,11 @@ BOT_USERNAME = "dosya_asistani_bot"
 BOT_NAME = "Dosya Asistanı"
 BOT_VERSION = "2.0.0"
 
-# ========== ÇALIŞMA SAATLERİ ==========
-WORK_HOURS_START = 8  # Sabah 8
-WORK_HOURS_END = 20   # Akşam 8
-WORK_HOURS_ACTIVE = True  # Çalışma saati kontrolü aktif
+# Çalışma saatleri kontrolü (7/24 aktif)
+# if not await check_business_hours():
+#     await update.message.reply_text("Çalışma saatleri dışındayız...")
+#     return
+
 
 # ========== PAKET AYARLARI ==========
 DEFAULT_PACKAGE_SIZE = 30  # Varsayılan paket boyutu
@@ -442,4 +443,5 @@ if __name__ == "__main__":
     print(f"📁 Desteklenen format: {len(SUPPORTED_FORMATS)}")
     print(f"✨ Kalite seviyesi: {len(QUALITY_LEVELS)}")
     print("=" * 50)
+
     print("✅ Config dosyası hazır!")
