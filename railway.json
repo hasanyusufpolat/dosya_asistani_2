@@ -1,3 +1,12 @@
+# ===== GEREKLİ ARAÇLAR =====
+setuptools==68.2.2
+wheel==0.41.2
+
+# ===== TEMEL KÜTÜPHANELER =====
+python-telegram-bot==20.7
+python-dotenv==1.0.0
+...
+
 {
   "$schema": "https://railway.app/railway.schema.json",
   "build": {
