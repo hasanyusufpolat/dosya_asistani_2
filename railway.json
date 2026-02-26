@@ -1,22 +1,15 @@
-# ===== GEREKLİ ARAÇLAR =====
-setuptools==68.2.2
-wheel==0.41.2
-
-# ===== TEMEL KÜTÜPHANELER =====
-python-telegram-bot==20.7
-python-dotenv==1.0.0
-...
-
 {
-  "$schema": "https://railway.app/railway.schema.json",
-  "build": {
-    "builder": "NIXPACKS",
-    "buildCommand": "pip install --upgrade pip setuptools wheel && pip install -r requirements.txt"
-  },
-  "deploy": {
-    "startCommand": "python bot.py",
-    "healthcheckPath": "/",
-    "restartPolicyType": "ON_FAILURE",
-    "restartPolicyMaxRetries": 10
-  }
+    "build": {
+        "builder": "NIXPACKS",
+        "buildCommand": "pip install --upgrade pip setuptools wheel && pip install -r requirements.txt"
+    },
+    "deploy": {
+        "startCommand": "python bot.py",
+        "healthcheckPath": "/",
+        "restartPolicyType": "ON_FAILURE",
+        "restartPolicyMaxRetries": 10
+    },
+    "env": {
+        "PYTHON_VERSION": "3.11.9"
+    }
 }
