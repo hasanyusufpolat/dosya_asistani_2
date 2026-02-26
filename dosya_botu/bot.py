@@ -176,7 +176,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📎 Dosya Yükle", callback_data="dosya_yukle")],
             [InlineKeyboardButton("💳 Paket Satın Al", callback_data="show_packages")],
             [InlineKeyboardButton("📊 Kalan Haklarım", callback_data="check_rights")],
-            [InlineKeyboardButton("✨ Akıllı İşlemler Menüsü", callback_data="smart_menu")]
+            # Akıllı İşlemler butonu KALDIRILDI
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -184,8 +184,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text="📂 **Dosya Asistanı hazır**\n\nNe yapmak istersiniz?\n\n"
                  "📎 **Dosya Yükle** - Dönüşüm yapmak için\n"
                  "💳 **Paket Satın Al** - Yeni paket almak için\n"
-                 "📊 **Kalan Haklarım** - Hak durumunuzu görmek için\n"
-                 "✨ **Akıllı İşlemler** - Gelişmiş belge işleme özellikleri\n\n"
+                 "📊 **Kalan Haklarım** - Hak durumunuzu görmek için\n\n"
+                 "✨ **Not:** Akıllı işlemler (isimlendirme, sınıflandırma, özetleme, vb.)\n"
+                 "dosya yükledikten sonra otomatik olarak gösterilecektir.\n\n"
                  "⚡ **7/24 HİZMETİNİZDEYİZ**\n\n"
                  "Desteklenen dosya türleri:\n"
                  "• PDF (`.pdf`)\n"
@@ -204,8 +205,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Lütfen aşağıdaki 📎 simgesine tıklayarak dosyanızı seçin ve gönderin."
         )
     
-    elif query.data == "smart_menu":
-        await show_smart_menu(update, context)
+    # smart_menu handler'ı KALDIRILDI - artık kullanılmıyor
     
     elif query.data == "check_rights":
         remaining = get_user_rights_direct(user_id)
@@ -242,36 +242,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.message.reply_text("❌ Bilgilerinize ulaşılamadı.")
 
-async def show_smart_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Akıllı işlemler menüsünü göster"""
-    query = update.callback_query
-    
-    keyboard = [
-        [InlineKeyboardButton("📛 Akıllı İsimlendirme", callback_data="smart_naming")],
-        [InlineKeyboardButton("📄 Belge Türü Tanıma", callback_data="smart_classify")],
-        [InlineKeyboardButton("✨ Akıllı Dönüşüm (Analiz + Dönüşüm)", callback_data="smart_convert")],
-        [InlineKeyboardButton("📋 Belge Özetleme", callback_data="smart_summarize")],
-        [InlineKeyboardButton("✅ Hata ve Eksik Kontrolü", callback_data="smart_validate")],
-        [InlineKeyboardButton("🔁 Tüm Akıllı İşlemler", callback_data="smart_all")],
-        [InlineKeyboardButton("⭐ Kalite Optimizasyonu", callback_data="smart_quality")],
-        [InlineKeyboardButton("◀️ Ana Menüye Dön", callback_data="merhaba")]
-    ]
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        text="✨ **AKILLI İŞLEMLER MENÜSÜ**\n\n"
-             "Aşağıdaki işlemlerden birini seçin:\n\n"
-             "📛 **Akıllı İsimlendirme** - Dosya içeriğine göre anlamlı isim verir (1 hak)\n"
-             "📄 **Belge Türü Tanıma** - Belge türünü otomatik algılar (1 hak)\n"
-             "✨ **Akıllı Dönüşüm** - Analiz + dönüşüm (2 hak)\n"
-             "📋 **Belge Özetleme** - 6-7 satırlık özet çıkarır (1 hak)\n"
-             "✅ **Hata ve Eksik Kontrolü** - Eksik alanları tespit eder (1 hak)\n"
-             "🔁 **Tüm Akıllı İşlemler** - Yukarıdaki tüm işlemler tek seferde (5 hak)\n"
-             "⭐ **Kalite Optimizasyonu** - Belgeyi profesyonel kaliteye yükseltir (1 hak)",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
+# show_smart_menu fonksiyonu TAMAMEN KALDIRILDI - artık kullanılmıyor
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Dosya gönderildiğinde çalışır"""
@@ -359,39 +330,47 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['file_name'] = file_name
     context.user_data['file_size'] = file_size
     
-    # Dosya yüklendikten sonra akıllı işlem menüsünü göster
+    # Dosya yüklendikten sonra işlem menüsünü göster
     await show_file_actions(update, context, file_path, file_type, file_name)
 
 async def show_file_actions(update: Update, context: ContextTypes.DEFAULT_TYPE, file_path: str, file_type: str, file_name: str):
-    """Dosya yüklendikten sonra yapılabilecek işlemleri göster - GELİŞMİŞ VERSİYON"""
+    """
+    Dosya yüklendikten sonra yapılabilecek işlemleri göster
+    - Önce dönüşüm seçenekleri
+    - Sonra akıllı işlemler
+    """
     
-    # Temel akıllı işlem butonları
-    keyboard = [
-        [InlineKeyboardButton("📛 Akıllı İsimlendir", callback_data="action_naming")],
-        [InlineKeyboardButton("📄 Belge Türünü Tanı", callback_data="action_classify")],
-    ]
+    # ÖNCE DÖNÜŞÜM SEÇENEKLERİ
+    conversion_keyboard = []
     
-    # DOSYA TÜRÜNE GÖRE DÖNÜŞÜM SEÇENEKLERİ
     if file_type in CONVERSION_MAP:
-        # Dönüşüm seçenekleri varsa başlık ekle
-        keyboard.append([InlineKeyboardButton("🔄 DÖNÜŞÜM SEÇENEKLERİ", callback_data="noop")])
-        
-        # Her dönüşüm seçeneği için buton ekle
         for target in CONVERSION_MAP[file_type]:
             display_name = DISPLAY_NAMES.get(target, target)
             callback_data = f"convert|{target}"
-            keyboard.append([InlineKeyboardButton(f"🔄 {display_name}", callback_data=callback_data)])
+            conversion_keyboard.append([InlineKeyboardButton(f"🔄 {display_name}", callback_data=callback_data)])
     
-    # Diğer akıllı işlemler
-    keyboard.extend([
-        [InlineKeyboardButton("✨ Akıllı Dönüşüm (Analiz + Dönüşüm)", callback_data="action_convert")],
-        [InlineKeyboardButton("📋 Özetle", callback_data="action_summarize")],
-        [InlineKeyboardButton("✅ Hata Kontrolü", callback_data="action_validate")],
-        [InlineKeyboardButton("⭐ Kalite Optimizasyonu", callback_data="action_quality")],
+    # SONRA AKILLI İŞLEMLER (dosya yüklendikten sonra)
+    smart_keyboard = [
+        [InlineKeyboardButton("━━━━━━━━━━━━━━━━━━━━━", callback_data="separator")],  # Ayraç
+        [InlineKeyboardButton("✨ AKILLI İŞLEMLER", callback_data="smart_header")],  # Başlık
+        [
+            InlineKeyboardButton("📛 İsimlendir", callback_data="action_naming"),
+            InlineKeyboardButton("📄 Sınıflandır", callback_data="action_classify"),
+        ],
+        [
+            InlineKeyboardButton("✨ Akıllı Dönüşüm", callback_data="action_convert"),
+            InlineKeyboardButton("📋 Özetle", callback_data="action_summarize"),
+        ],
+        [
+            InlineKeyboardButton("✅ Hata Kontrolü", callback_data="action_validate"),
+            InlineKeyboardButton("⭐ Kalite", callback_data="action_quality"),
+        ],
         [InlineKeyboardButton("🔁 Tüm İşlemler (5 Hak)", callback_data="action_all")],
         [InlineKeyboardButton("◀️ Ana Menü", callback_data="merhaba")]
-    ])
+    ]
     
+    # Klavyeleri birleştir
+    keyboard = conversion_keyboard + smart_keyboard
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     # Dosya türüne göre açıklama metni
@@ -401,8 +380,9 @@ async def show_file_actions(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         f"📂 **Dosya yüklendi:** `{file_name}`\n\n"
         f"📁 **Dosya türü:** {DISPLAY_NAMES.get(file_type, file_type)}\n"
         f"🔄 **Dönüştürülebilecek formatlar:** {conversion_options if conversion_options else 'Yok'}\n\n"
-        f"**Ne yapmak istersiniz?**\n"
-        f"• Yukarıdaki butonlardan birini seçin",
+        f"**⚡ Ne yapmak istersiniz?**\n"
+        f"• Yukarıdaki butonlardan birini seçin\n"
+        f"• ✨ Akıllı işlemler için aşağı kaydırın",
         reply_markup=reply_markup,
         parse_mode='Markdown'
     )
@@ -507,7 +487,9 @@ async def back_to_convert_handler(update: Update, context: ContextTypes.DEFAULT_
                                    context.user_data.get('file_name'),
                                    context.user_data.get('file_size', 0))
     else:
-        await show_smart_menu(update, context)
+        # Ana menüye dön
+        await query.edit_message_text("❌ Dosya bulunamadı. Ana menüye dönülüyor...")
+        # Ana menüyü gösteren bir fonksiyon çağrılabilir
 
 # ========== AKILLI İŞLEM HANDLER'LARI ==========
 async def smart_naming_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -628,6 +610,10 @@ async def smart_action_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     """Akıllı işlem butonlarını yönet (dosya yüklendikten sonra)"""
     query = update.callback_query
     await query.answer()
+    
+    # Ayraç ve başlık butonlarını yoksay
+    if query.data in ["separator", "smart_header"]:
+        return
     
     action = query.data
     user_id = update.effective_user.id
@@ -1520,15 +1506,15 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("admin", admin_command))
     
-    # Buton handler'ları
-    application.add_handler(CallbackQueryHandler(button_handler, pattern="^(merhaba|dosya_yukle|check_rights|smart_menu)$"))
+    # Buton handler'ları - smart_menu kaldırıldı
+    application.add_handler(CallbackQueryHandler(button_handler, pattern="^(merhaba|dosya_yukle|check_rights)$"))
     application.add_handler(CallbackQueryHandler(convert_handler, pattern="^convert"))
     application.add_handler(CallbackQueryHandler(smart_action_handler, pattern="^action_"))
     application.add_handler(CallbackQueryHandler(smart_convert_to_handler, pattern="^smart_convert_to"))
     application.add_handler(CallbackQueryHandler(action_cancel_handler, pattern="^action_cancel$"))
     application.add_handler(CallbackQueryHandler(admin_button_handler, pattern="^admin_"))
     
-    # Akıllı menü butonları için handler'lar
+    # Akıllı işlem handler'ları (ana menüden çağrılmayacak ama dosya sonrası için kalmalı)
     application.add_handler(CallbackQueryHandler(smart_naming_handler, pattern="^smart_naming$"))
     application.add_handler(CallbackQueryHandler(smart_classify_handler, pattern="^smart_classify$"))
     application.add_handler(CallbackQueryHandler(smart_convert_handler, pattern="^smart_convert$"))
@@ -1560,7 +1546,7 @@ def main():
     print("🤖 Bot çalışıyor...")
     print("📱 Telegram: @dosya_asistani_bot")
     print("⚡ 7/24 HİZMETİNİZDEYİZ!")
-    print("✨ Akıllı İşlemler: Aktif")
+    print("✨ Akıllı İşlemler: Dosya yüklendikten sonra gösterilir")
     print("⭐ Kalite Seviyeleri: Taslak/Standart/Profesyonel/Premium")
     print("🛑 Durdurmak: CTRL+C")
     print("=" * 60)
