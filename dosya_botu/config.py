@@ -16,7 +16,6 @@ BOT_VERSION = "2.0.0"
 
 # Çalışma saatleri kontrolü (7/24 aktif)
 # if not await check_business_hours():
-#     await update.message.reply_text("Çalışma saatleri dışındayız...")
 #     return
 
 
@@ -445,3 +444,4 @@ if __name__ == "__main__":
     print("=" * 50)
 
     print("✅ Config dosyası hazır!")
+
