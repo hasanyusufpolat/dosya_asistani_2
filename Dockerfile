@@ -18,3 +18,5 @@ RUN pip install --upgrade pip setuptools wheel && \
 COPY . .
 
 CMD ["python", "bot.py"]
+# Dockerfile'ın en altına ekle:
+STOPSIGNAL SIGINT
