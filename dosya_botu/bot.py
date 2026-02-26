@@ -1,47 +1,3 @@
-import sys
-import os
-
-# Tek instance kontrolü (opsiyonel)
-LOCK_FILE = 'bot.lock'
-
-def check_single_instance():
-    """Bot'un tek bir instance çalıştığından emin ol"""
-    if os.path.exists(LOCK_FILE):
-        # Lock dosyası var, içindeki PID'i kontrol et
-        try:
-            with open(LOCK_FILE, 'r') as f:
-                old_pid = int(f.read().strip())
-            # İşlem hala çalışıyor mu?
-            if os.name == 'nt':  # Windows
-                import subprocess
-                result = subprocess.run(f'tasklist /FI "PID eq {old_pid}"', 
-                                       shell=True, capture_output=True, text=True)
-                if str(old_pid) in result.stdout:
-                    print(f"❌ Bot zaten çalışıyor (PID: {old_pid})")
-                    sys.exit(1)
-            else:  # Linux/Mac
-                try:
-                    os.kill(old_pid, 0)  # İşlem var mı?
-                    print(f"❌ Bot zaten çalışıyor (PID: {old_pid})")
-                    sys.exit(1)
-                except OSError:
-                    pass  # İşlem yok, devam et
-        except:
-            pass
-    
-    # Yeni PID'i yaz
-    with open(LOCK_FILE, 'w') as f:
-        f.write(str(os.getpid()))
-    
-    print(f"✅ Bot başlatıldı (PID: {os.getpid()})")
-
-# main() fonksiyonunun başında çağır:
-def main():
-    check_single_instance()  # <-- YENİ SATIR
-    # ... devam
-
-
-
 """
 ANA BOT DOSYASI - PROFESYONEL VERSİYON
 Gelişmiş hata yönetimi, loglama ve optimizasyon
@@ -49,6 +5,7 @@ Tüm modüller entegre edilmiştir
 Yapay zeka destekli analiz, isimlendirme, sınıflandırma, özetleme, doğrulama ve kalite optimizasyonu
 """
 
+import sys
 import os
 import datetime
 import sqlite3
@@ -57,6 +14,52 @@ import asyncio
 from typing import Optional, Dict, Any, List
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+
+# Tek instance kontrolü için lock dosyası
+LOCK_FILE = 'bot.lock'
+
+def check_single_instance():
+    """Bot'un tek bir instance çalıştığından emin ol (gelişmiş)"""
+    try:
+        if os.name == 'nt':  # Windows
+            if os.path.exists(LOCK_FILE):
+                try:
+                    with open(LOCK_FILE, 'r') as f:
+                        old_pid = f.read().strip()
+                    # Eski işlem var mı kontrol et
+                    import subprocess
+                    result = subprocess.run(f'tasklist /FI "PID eq {old_pid}"', 
+                                           shell=True, capture_output=True, text=True)
+                    if str(old_pid) in result.stdout:
+                        print(f"❌ Bot zaten çalışıyor (PID: {old_pid})")
+                        print("💡 Eğer bot çalışmıyorsa, bot.lock dosyasını silin")
+                        sys.exit(1)
+                except:
+                    pass
+            
+            with open(LOCK_FILE, 'w') as f:
+                f.write(str(os.getpid()))
+            print(f"✅ Bot başlatıldı (PID: {os.getpid()})")
+            
+        else:  # Linux/Mac
+            try:
+                import fcntl
+                lock_file = open(LOCK_FILE, 'w')
+                try:
+                    fcntl.lockf(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    lock_file.write(str(os.getpid()))
+                    lock_file.flush()
+                    print(f"✅ Bot başlatıldı (PID: {os.getpid()})")
+                except IOError:
+                    print("❌ Bot zaten çalışıyor!")
+                    print("💡 Eğer bot çalışmıyorsa, bot.lock dosyasını silin")
+                    sys.exit(1)
+            except ImportError:
+                print("⚠️ fcntl modülü bulunamadı, instance kontrolü yapılamıyor")
+                
+    except Exception as e:
+        print(f"⚠️ Instance kontrolü sırasında hata: {e}")
+        print("💡 Bot çalıştırılıyor...")
 
 # Kendi modüllerimiz
 from config import *
@@ -101,44 +104,92 @@ def get_user_rights_direct(user_id: int) -> int:
         return 0
 
 def extract_text_from_file(file_path: str, file_type: str) -> str:
-    """Dosyadan metin çıkar (yardımcı fonksiyon)"""
+    """Dosyadan metin çıkar (gelişmiş hata yönetimi)"""
     try:
         if file_type == 'WORD':
-            from docx import Document
-            doc = Document(file_path)
-            return '\n'.join([p.text for p in doc.paragraphs if p.text.strip()])
+            try:
+                from docx import Document
+                doc = Document(file_path)
+                return '\n'.join([p.text for p in doc.paragraphs if p.text.strip()])
+            except Exception as e:
+                logger.error(f"❌ Word okuma hatası: {e}")
+                return f"[Word dosyası okunamadı: {e}]"
+        
         elif file_type == 'PDF':
-            import PyPDF2
-            text = ""
-            with open(file_path, 'rb') as f:
-                pdf_reader = PyPDF2.PdfReader(f)
-                for page in pdf_reader.pages:
-                    text += page.extract_text() + "\n"
-            return text
+            try:
+                import PyPDF2
+                text = ""
+                with open(file_path, 'rb') as f:
+                    pdf_reader = PyPDF2.PdfReader(f)
+                    for page in pdf_reader.pages:
+                        page_text = page.extract_text()
+                        if page_text:
+                            text += page_text + "\n"
+                return text
+            except Exception as e:
+                logger.error(f"❌ PDF okuma hatası: {e}")
+                return f"[PDF dosyası okunamadı: {e}]"
+        
         elif file_type == 'EXCEL':
-            import pandas as pd
-            df = pd.read_excel(file_path)
-            return df.to_string()
+            try:
+                import pandas as pd
+                df = pd.read_excel(file_path)
+                return df.to_string()
+            except Exception as e:
+                logger.error(f"❌ Excel okuma hatası: {e}")
+                return f"[Excel dosyası okunamadı: {e}]"
+        
         elif file_type == 'POWERPOINT':
-            from pptx import Presentation
-            text = ""
-            prs = Presentation(file_path)
-            for slide in prs.slides:
-                for shape in slide.shapes:
-                    if hasattr(shape, "text"):
-                        text += shape.text + "\n"
-            return text
+            try:
+                from pptx import Presentation
+                text = ""
+                prs = Presentation(file_path)
+                for slide in prs.slides:
+                    for shape in slide.shapes:
+                        if hasattr(shape, "text") and shape.text:
+                            text += shape.text + "\n"
+                return text
+            except Exception as e:
+                logger.error(f"❌ PowerPoint okuma hatası: {e}")
+                return f"[PowerPoint dosyası okunamadı: {e}]"
+        
         elif file_type == 'GORSEL':
-            from PIL import Image
-            import pytesseract
-            image = Image.open(file_path)
-            return pytesseract.image_to_string(image, lang='tur+eng')
+            try:
+                from PIL import Image
+                import pytesseract
+                
+                # Tesseract yolunu kontrol et
+                if os.name == 'nt':  # Windows
+                    possible_paths = [
+                        r'C:\Program Files\Tesseract-OCR\tesseract.exe',
+                        r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
+                    ]
+                    for path in possible_paths:
+                        if os.path.exists(path):
+                            pytesseract.pytesseract.tesseract_cmd = path
+                            break
+                
+                image = Image.open(file_path)
+                return pytesseract.image_to_string(image, lang='tur+eng')
+            except ImportError:
+                logger.error("❌ pytesseract veya PIL yüklü değil")
+                return "[OCR kütüphaneleri bulunamadı]"
+            except Exception as e:
+                logger.error(f"❌ Görsel OCR hatası: {e}")
+                return f"[Görsel okunamadı: {e}]"
+        
         else:
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                return f.read()
+            # TXT veya diğer formatlar
+            try:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    return f.read()
+            except Exception as e:
+                logger.error(f"❌ Metin dosyası okuma hatası: {e}")
+                return f"[Dosya okunamadı: {e}]"
+                
     except Exception as e:
-        logger.error(f"❌ Metin çıkarma hatası: {e}")
-        return ""
+        logger.error(f"❌ Metin çıkarma genel hatası: {e}")
+        return f"[İşlem hatası: {e}]"
 
 async def check_business_hours() -> bool:
     """
@@ -220,7 +271,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📎 Dosya Yükle", callback_data="dosya_yukle")],
             [InlineKeyboardButton("💳 Paket Satın Al", callback_data="show_packages")],
             [InlineKeyboardButton("📊 Kalan Haklarım", callback_data="check_rights")],
-            # Akıllı İşlemler butonu KALDIRILDI
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -248,8 +298,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📎 **Dosya gönderme butonu**\n\n"
             "Lütfen aşağıdaki 📎 simgesine tıklayarak dosyanızı seçin ve gönderin."
         )
-    
-    # smart_menu handler'ı KALDIRILDI - artık kullanılmıyor
     
     elif query.data == "check_rights":
         remaining = get_user_rights_direct(user_id)
@@ -285,8 +333,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         else:
             await query.message.reply_text("❌ Bilgilerinize ulaşılamadı.")
-
-# show_smart_menu fonksiyonu TAMAMEN KALDIRILDI - artık kullanılmıyor
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Dosya gönderildiğinde çalışır"""
@@ -525,15 +571,11 @@ async def back_to_convert_handler(update: Update, context: ContextTypes.DEFAULT_
     file_type = context.user_data.get('file_type')
     
     if file_type:
-        await handle_smart_convert(query, context, update.effective_user.id, 
-                                   context.user_data.get('current_file'),
-                                   file_type,
-                                   context.user_data.get('file_name'),
-                                   context.user_data.get('file_size', 0))
+        # Burada uygun işlem yapılabilir
+        await query.edit_message_text("İşlem iptal edildi. Yeni dosya yükleyebilirsiniz.")
     else:
         # Ana menüye dön
         await query.edit_message_text("❌ Dosya bulunamadı. Ana menüye dönülüyor...")
-        # Ana menüyü gösteren bir fonksiyon çağrılabilir
 
 # ========== AKILLI İŞLEM HANDLER'LARI ==========
 async def smart_naming_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1484,6 +1526,8 @@ async def handle_user_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== ANA FONKSİYON ==========
 def main():
     """Botu başlat"""
+    check_single_instance()  # Tek instance kontrolü
+    
     print("🚀 Dosya Asistanı Bot başlatılıyor...")
     print("=" * 60)
     
@@ -1603,7 +1647,12 @@ def main():
     finally:
         print("👋 Bot durduruldu.")
         logger.info("👋 Bot durduruldu.")
+        # Lock dosyasını temizle
+        try:
+            if os.path.exists(LOCK_FILE):
+                os.remove(LOCK_FILE)
+        except:
+            pass
 
 if __name__ == "__main__":
     main()
-
