@@ -1,8 +1,6 @@
 FROM python:3.11-slim
 
-WORKDIR /app
-
-# Sistem bağımlılıkları
+# Sistem bağımlılıklarını yükle
 RUN apt-get update && apt-get install -y \
     tesseract-ocr \
     tesseract-ocr-tur \
@@ -10,12 +8,16 @@ RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     && rm -rf /var/lib/apt/lists/*
 
-# Python bağımlılıkları
+# Çalışma dizini oluştur
+WORKDIR /app
+
+# Requirements dosyasını kopyala ve bağımlılıkları yükle
 COPY requirements.txt .
 RUN pip install --upgrade pip setuptools wheel && \
-    pip install -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt
 
-# Uygulama dosyaları
+# Tüm uygulama dosyalarını kopyala
 COPY . .
 
+# Bot'u başlat
 CMD ["python", "bot.py"]
