@@ -103,7 +103,7 @@ async def check_business_hours() -> bool:
     now = datetime.datetime.now()
     hour = now.hour
     # Sabah 8 (8) ile akşam 8 (20) arası
-    return 8 <= hour < 20
+    return 0 <= hour < 23
 
 async def get_business_hours_message() -> str:
     """
@@ -115,8 +115,8 @@ async def get_business_hours_message() -> str:
     if current_hour < 8:
         target_hour = 8
         wait_hours = target_hour - current_hour
-    elif current_hour >= 20:
-        target_hour = 8
+    elif current_hour >= 23:
+        target_hour = 0
         wait_hours = (24 - current_hour) + target_hour
     else:
         return ""  # Çalışma saatleri içinde
@@ -1580,4 +1580,5 @@ def main():
         logger.info("👋 Bot durduruldu.")
 
 if __name__ == "__main__":
+
     main()
