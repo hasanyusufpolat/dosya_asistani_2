@@ -1,5 +1,5 @@
 """
-ANA BOT DOSYASI - PROFESYONEL VERSİYON
+ANA BOT DOSYASI - PROFESYONEL VERSİYON (GÜNCELLENMİŞ)
 Gelişmiş hata yönetimi, loglama ve optimizasyon
 Tüm modüller entegre edilmiştir
 Yapay zeka destekli analiz, isimlendirme, sınıflandırma, özetleme, doğrulama ve kalite optimizasyonu
@@ -11,7 +11,8 @@ import datetime
 import sqlite3
 import logging
 import asyncio
-from typing import Optional, Dict, Any, List
+import traceback
+from typing import Optional, Dict, Any, List, Union
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
@@ -875,8 +876,11 @@ async def handle_smart_convert(query, context, user_id, file_path, file_type, fi
         parse_mode='Markdown'
     )
 
+# ========== YENİ EKLENEN - GELİŞMİŞ DÖNÜŞÜM HANDLER'ı ==========
 async def smart_convert_to_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Dönüşüm formatı seçildikten sonra akıllı dönüşüm yap"""
+    """
+    Dönüşüm formatı seçildikten sonra akıllı dönüşüm yap - GELİŞMİŞ VERSİYON
+    """
     query = update.callback_query
     await query.answer()
     
@@ -889,43 +893,35 @@ async def smart_convert_to_handler(update: Update, context: ContextTypes.DEFAULT
     file_name = context.user_data.get('file_name')
     file_size = context.user_data.get('file_size', 0)
     
+    # DEBUG: Gelen değerleri logla
+    logger.info(f"🔍 smart_convert_to_handler çağrıldı - Hedef: {target}, Kaynak tip: {file_type}")
+    
+    # Dosya kontrolü
+    if not file_path or not os.path.exists(file_path):
+        await query.edit_message_text("❌ **Dosya bulunamadı!**\nLütfen dosyayı tekrar yükleyin.")
+        return
+    
+    # Hedef tip kontrolü
+    if not target or target == "UNKNOWN":
+        await query.edit_message_text("❌ **Geçersiz dönüşüm hedefi!**\nLütfen tekrar deneyin.")
+        return
+    
     # Çıktı dosyası adını oluştur
     base_name = os.path.splitext(file_name)[0]
     output_ext = EXTENSION_MAP.get(target, '.pdf')
     safe_name = utils.safe_filename(f"{user_id}_{base_name}_converted{output_ext}")
     output_path = f"temp/{safe_name}"
     
-    # ÖNCE ANALİZ YAP (1 HAK)
+    # Kullanıcıya bilgi ver
     await query.edit_message_text(
-        f"🔍 **Dosya analiz ediliyor...**\n\n"
-        f"📁 Dosya: `{file_name}`\n"
-        f"🔬 Bu işlem 1 hak tüketecektir.\n\n"
-        f"Lütfen bekleyin..."
+        f"🔄 **Dönüşüm başlatılıyor...**\n\n"
+        f"📁 Kaynak: `{file_name}`\n"
+        f"🎯 Hedef: **{DISPLAY_NAMES.get(target, target)}**\n"
+        f"⚙️ Kalite: Profesyonel\n\n"
+        f"⏳ Bu işlem birkaç saniye sürebilir..."
     )
     
     try:
-        # Analiz yap
-        analysis_result = analyzer.analyze_file(file_path)
-        decision, confidence, issues, details = analysis_result
-        
-        # Analiz hakkını tüket
-        analysis_success = db.increase_analysis_count(user_id)
-        if not analysis_success:
-            await query.edit_message_text("❌ Analiz için yeterli hakkınız bulunmamaktadır.")
-            return
-        
-        # Analiz sonucunu bildir
-        decision_emoji = "✅" if decision == "DOĞRUDAN_DÖNÜŞTÜR" else "✨"
-        await query.edit_message_text(
-            f"{decision_emoji} **Analiz Tamamlandı**\n\n"
-            f"📊 Karar: **{decision}**\n"
-            f"📈 Güven: %{confidence}\n\n"
-            f"⏳ Şimdi dönüştürme işlemi başlıyor...\n"
-            f"📦 Bu işlem 1 hak daha tüketecektir."
-        )
-        
-        await asyncio.sleep(1)
-        
         # Dönüşümü yap
         start_time = datetime.datetime.now()
         
@@ -942,7 +938,8 @@ async def smart_convert_to_handler(update: Update, context: ContextTypes.DEFAULT
         processing_time = (datetime.datetime.now() - start_time).total_seconds()
         
         if success and os.path.exists(out_path):
-            # Dönüşüm hakkını tüket
+            # Hak tüket
+            rights_consumed = 1
             db.decrease_rights(user_id, conv_type)
             
             # Dönüşüm kaydını ekle
@@ -958,7 +955,7 @@ async def smart_convert_to_handler(update: Update, context: ContextTypes.DEFAULT
                 quality_score=metrics.quality_score if metrics else 95
             )
             
-            # Kullanıcıya dosyayı gönder
+            # Kullanıcıya dönüştürülmüş dosyayı gönder
             with open(out_path, 'rb') as f:
                 await query.message.reply_document(
                     document=f,
@@ -966,32 +963,33 @@ async def smart_convert_to_handler(update: Update, context: ContextTypes.DEFAULT
                     caption=f"✅ **Dönüştürme tamamlandı!**"
                 )
             
-            # Dönüşüm mesajını gönder
-            message = f"✅ Dosya başarıyla dönüştürüldü. (Kalite: %{metrics.quality_score if metrics else 95})"
-            await query.message.reply_text(message, parse_mode='Markdown')
+            # Başarı mesajı
+            quality_text = f"%{metrics.quality_score}" if metrics and metrics.quality_score else "Yüksek"
+            await query.message.reply_text(
+                f"✅ **Dönüşüm başarılı!**\n"
+                f"📁 {DISPLAY_NAMES.get(file_type, file_type)} → {DISPLAY_NAMES.get(target, target)}\n"
+                f"⏱️ Süre: {processing_time:.1f}s\n"
+                f"📊 Kalite: {quality_text}\n"
+                f"📌 {rights_consumed} hak tüketildi."
+            )
             
-            # Rapor göster
-            if metrics:
-                report = converters.get_conversion_report(metrics)
-                await query.message.reply_text(report, parse_mode='Markdown')
+            # Rapor göster (varsa)
+            if metrics and hasattr(metrics, 'warnings') and metrics.warnings:
+                warning_text = "\n".join([f"⚠️ {w}" for w in metrics.warnings[:3]])
+                await query.message.reply_text(f"📋 **Dönüşüm notları:**\n{warning_text}")
             
             # Kalan hakkı göster
             new_remaining = get_user_rights_direct(user_id)
-            
-            await query.message.reply_text(
-                f"📊 **İşlem Özeti**\n\n"
-                f"✅ Toplam tüketilen hak: **2** (Analiz + Dönüşüm)\n"
-                f"🔁 Kalan hak: **{new_remaining}**",
-                parse_mode='Markdown'
-            )
+            await query.message.reply_text(f"🔁 **Kalan hak:** {new_remaining}")
             
             # Geçici dosyaları temizle
             utils.clean_temp_files(user_id, file_path, out_path)
             
         else:
             # Başarısız dönüşüm
-            db.increase_failed_count(user_id)
+            error_msg = metrics.warnings[0] if metrics and metrics.warnings else "Bilinmeyen hata"
             
+            db.increase_failed_count(user_id)
             db.save_conversion_record(
                 user_id=user_id,
                 file_name=file_name,
@@ -1001,19 +999,29 @@ async def smart_convert_to_handler(update: Update, context: ContextTypes.DEFAULT
                 conversion_type='direct',
                 status='failed',
                 processing_time=processing_time,
-                error_message="Dönüşüm başarısız"
+                error_message=error_msg
             )
             
+            # Hata mesajı
             await query.message.reply_text(
                 f"❌ **Dönüştürme başarısız!**\n\n"
-                f"⚠️ Hata: Dönüşüm sırasında bir hata oluştu."
+                f"📁 Dosya: `{file_name}`\n"
+                f"⚠️ Hata: {error_msg}\n\n"
+                f"📞 Destek: @yusozone"
             )
             
+            # Geçici dosyayı temizle (kaynak dosya silinmez)
             utils.clean_temp_files(user_id, file_path)
             
     except Exception as e:
         logger.error(f"❌ Akıllı dönüşüm hatası: {e}")
-        await query.edit_message_text(f"❌ Hata oluştu: {str(e)[:100]}")
+        traceback.print_exc()
+        await query.message.reply_text(
+            f"❌ **Dönüştürme sırasında hata oluştu!**\n\n"
+            f"⚠️ Hata: {str(e)[:200]}\n\n"
+            f"📞 Destek: @yusozone"
+        )
+        utils.clean_temp_files(user_id, file_path)
 
 async def handle_smart_summarize(query, context, user_id, file_path, file_type, file_name, file_size):
     """Belge özetleme işlemi"""
